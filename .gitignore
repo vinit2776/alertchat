@@ -1,0 +1,49 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build outputs
+dist/
+build/
+.next/
+out/
+
+# Environment files — never commit secrets
+.env
+.env.local
+.env.*.local
+
+# Keep .env.example and .env.production (no secrets in these)
+!.env.example
+!.env.production
+
+# Vercel
+.vercel/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# TypeScript
+*.tsbuildinfo
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Flutter
+app/mobile/.dart_tool/
+app/mobile/.flutter-plugins
+app/mobile/.flutter-plugins-dependencies
+app/mobile/build/
+app/mobile/*.iml
+app/mobile/android/.gradle/
+app/mobile/android/local.properties
+app/mobile/ios/Pods/
+app/mobile/ios/.symlinks/
