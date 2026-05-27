@@ -14,17 +14,17 @@ push:
 
 # Force a Vercel production deploy right now (without a git push)
 deploy:
-	cd $(FRONTEND_DIR) && vercel --prod
+	vercel --prod --yes
 
 ## ── Monitor ───────────────────────────────────────────────────────────────
 
 # Stream live Vercel function logs
 logs:
-	cd $(FRONTEND_DIR) && vercel logs https://frontend-five-rho-16.vercel.app --follow
+	vercel logs https://frontend-five-rho-16.vercel.app --follow
 
 # Show latest deployment status
 status:
-	cd $(FRONTEND_DIR) && vercel ls
+	vercel ls
 
 # Open the live app in browser
 open:
@@ -34,12 +34,12 @@ open:
 
 # List all Vercel env vars for production
 env:
-	cd $(FRONTEND_DIR) && vercel env ls production
+	vercel env ls production
 
 # Set a Vercel env var: make set-env KEY=FOO VALUE=bar
 set-env:
-	@printf '$(VALUE)' | cd $(FRONTEND_DIR) && vercel env add $(KEY) production --force
-	cd $(FRONTEND_DIR) && vercel --prod
+	@printf '$(VALUE)' | vercel env add $(KEY) production --force
+	vercel --prod --yes
 
 ## ── Local dev ─────────────────────────────────────────────────────────────
 
