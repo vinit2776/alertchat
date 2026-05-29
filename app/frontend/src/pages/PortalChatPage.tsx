@@ -41,7 +41,6 @@ export default function PortalChatPage({ token, onLogout, onShowHistory, onShowA
   const [input, setInput]               = useState('');
   const [loading, setLoading]           = useState(false);
   const [uploading, setUploading]       = useState(false);
-  const [uploadDone, setUploadDone]     = useState(false);
   const [dragOver, setDragOver]         = useState(false);
   const [confirmedFields, setConfirmedFields] = useState<ConfirmedFields | null>(null);
   const [quoteRunning, setQuoteRunning]         = useState(false);
@@ -147,7 +146,6 @@ export default function PortalChatPage({ token, onLogout, onShowHistory, onShowA
           { role: 'assistant', text: data.message,    ts: Date.now() - 1 },
           { role: 'assistant', text: follow.message,  ts: Date.now() },
         ]);
-        setUploadDone(true);
         setPhase('chat');
       } else {
         setMessages(prev => [...prev,
@@ -260,7 +258,7 @@ export default function PortalChatPage({ token, onLogout, onShowHistory, onShowA
     progressRef.current?.close();
     progressRef.current = null;
     setPhase('setup'); setSessionId(null); setMessages([]);
-    setPendingWelcome(''); setUploadDone(false);
+    setPendingWelcome('');
     setConfirmedFields(null); setQuoteResults(null); setCaptchaState(null);
     setCaptchaInput(''); setInput('');
   }
