@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ── Frontend typecheck + build ────────────────────────────────────────────
+  frontend:
+    name: Frontend (typecheck + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app/frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: app/frontend/package-lock.json
+
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm run build
+        env:
+          # Placeholder — real value is set as a Vercel env var
+          VITE_AUTOMATION_URL: https://placeholder.railway.app
+
+  # ── Automation backend typecheck ──────────────────────────────────────────
+  automation:
+    name: Automation backend (typecheck)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app/automation
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: app/automation/package-lock.json
+
+      # --ignore-scripts skips the Playwright browser download on CI
+      # (we only need tsc, not a real browser)
+      - run: npm ci --ignore-scripts
+      - run: npx tsc --noEmit

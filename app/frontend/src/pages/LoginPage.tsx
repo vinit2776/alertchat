@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import type { FormEvent } from 'react';
 
+interface UserInfo { role: string; username: string }
 interface Props {
-  onLogin: (token: string) => void;
+  onLogin: (token: string, user: UserInfo) => void;
 }
 
 export default function LoginPage({ onLogin }: Props) {
@@ -26,7 +27,7 @@ export default function LoginPage({ onLogin }: Props) {
       const data = await res.json();
       if (!data.success) throw new Error(data.message || 'Login failed');
       localStorage.setItem('chi_token', data.token);
-      onLogin(data.token);
+      onLogin(data.token, data.user ?? { role: 'user', username: '' });
     } catch (err: any) {
       setError(err.message || 'Login failed');
     } finally {

@@ -1,0 +1,127 @@
+{
+  "_comment": "TEMPLATE — copy this file to <portal_id>.json and fill in the selectors",
+
+  "portal_id": "REPLACE_WITH_PORTAL_ID",
+  "name":      "REPLACE WITH Display Name",
+  "base_url":  "https://REPLACE-WITH-PORTAL-DOMAIN.com",
+  "insurance_type": "motor",
+
+  "login": {
+    "url":               "/login",
+    "username_field":    "#username",
+    "password_field":    "#password",
+    "submit":            "button[type=submit]",
+    "success_indicator": ".dashboard, .home-page, [class*=dashboard]"
+  },
+
+  "quote_flow": [
+    {
+      "step_id":    "vehicle_details",
+      "label":      "Vehicle Details",
+      "delay_ms":   500,
+      "fields": [
+        {
+          "name":     "Registration Number",
+          "selector": "#regNo",
+          "source":   "rc.registration_number",
+          "type":     "text"
+        },
+        {
+          "name":     "Make",
+          "selector": "#vehicleMake",
+          "source":   "rc.make",
+          "type":     "select"
+        },
+        {
+          "name":     "Model",
+          "selector": "#vehicleModel",
+          "source":   "rc.model",
+          "type":     "select"
+        },
+        {
+          "name":     "Manufacturing Year",
+          "selector": "#mfgYear",
+          "source":   "rc.manufacturing_year",
+          "type":     "select"
+        },
+        {
+          "name":     "Fuel Type",
+          "selector": "#fuelType",
+          "source":   "rc.fuel_type",
+          "type":     "select",
+          "valueMap": {
+            "Petrol": "Petrol",
+            "Diesel": "Diesel",
+            "CNG":    "CNG",
+            "Electric": "Electric"
+          }
+        }
+      ],
+      "next_trigger": { "selector": "#proceedBtn, button:has-text('Next')", "action": "click" },
+      "wait_after":   "#ownerDetails, .owner-section"
+    },
+    {
+      "step_id":  "owner_details",
+      "label":    "Owner Details",
+      "fields": [
+        {
+          "name":     "Owner Name",
+          "selector": "#ownerName",
+          "source":   "rc.owner_name",
+          "type":     "text"
+        },
+        {
+          "name":     "Mobile Number",
+          "selector": "#mobile",
+          "source":   "chat.owner_mobile",
+          "type":     "text"
+        },
+        {
+          "name":     "Email",
+          "selector": "#email",
+          "source":   "chat.owner_email",
+          "type":     "text",
+          "optional": true
+        }
+      ],
+      "next_trigger": { "selector": "#nextBtn, button:has-text('Next')", "action": "click" },
+      "wait_after":   "#policyDetails, .policy-section"
+    },
+    {
+      "step_id":  "policy_details",
+      "label":    "Policy & Coverage",
+      "fields": [
+        {
+          "name":     "NCB Percentage",
+          "selector": "#ncbSelect",
+          "source":   "chat.ncb_percentage",
+          "type":     "select",
+          "valueMap": {
+            "0":  "0%",
+            "20": "20%",
+            "25": "25%",
+            "35": "35%",
+            "45": "45%",
+            "50": "50%"
+          }
+        },
+        {
+          "name":     "Previous Policy Expiry",
+          "selector": "#prevExpiry",
+          "source":   "chat.previous_policy_expiry",
+          "type":     "date",
+          "optional": true
+        }
+      ],
+      "next_trigger": { "selector": "#getQuoteBtn, button:has-text('Get Quote')", "action": "click" },
+      "wait_after":   ".quote-result, #premiumSection, [class*=premium]"
+    }
+  ],
+
+  "quote_result": {
+    "result_page_indicator": ".quote-result, #premiumSection",
+    "premium_selector":      ".final-premium, #totalPremium, [class*=premium-amount]",
+    "idv_selector":          ".idv-value, #idvAmount, [class*=idv]",
+    "full_page_screenshot":  true
+  }
+}

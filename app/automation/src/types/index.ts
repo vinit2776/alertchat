@@ -1,0 +1,121 @@
+// ── Insurance types ────────────────────────────────────────────────────────
+
+export type InsuranceType = 'motor' | 'health' | 'property' | 'travel';
+
+// ── Document OCR ───────────────────────────────────────────────────────────
+
+export type DocumentType = 'RC' | 'PAN' | 'AADHAAR' | 'DRIVING_LICENCE' | 'POLICY' | 'OTHER';
+
+export interface ExtractedDocument {
+  docType:    DocumentType;
+  fields:     Record<string, string>;   // field name → extracted value
+  confidence: number;                   // 0–1
+  rawText:    string;
+}
+
+// ── Insurance company registry ─────────────────────────────────────────────
+
+export interface InsuranceCompany {
+  id:                  string;
+  name:                string;
+  logoUrl:             string;
+  insuranceTypes:      InsuranceType[];
+  playbookVersion:     string;
+  enabled:             boolean;
+  credentialSecretKey: string;
+  lastTestedAt:        string | null;
+  createdAt:           string;
+  updatedAt:           string;
+}
+
+// ── Session state machine ──────────────────────────────────────────────────
+
+export type SessionStatus =
+  | 'collecting'    // gathering fields via chat
+  | 'confirming'    // user reviewing collected fields
+  | 'filling'       // browser automation filling form
+  | 'complete'      // quote generated
+  | 'error';        // something went wrong
+
+export interface SessionState {
+  sessionId:       string;
+  userId:          string;
+  insuranceType:   InsuranceType;
+  selectedCompanies: string[];          // portal IDs to quote from
+  extractedFields: Record<string, string>;   // from document OCR
+  collectedFields: Record<string, string>;   // from chat Q&A
+  confirmedFields: Record<string, string>;   // after user confirmation
+  missingRequired: string[];
+  currentStep:     string;
+  status:          SessionStatus;
+  createdAt:       number;
+  updatedAt:       number;
+}
+
+// ── Quote results ──────────────────────────────────────────────────────────
+
+export interface QuoteResult {
+  id:           string;
+  sessionId:    string;
+  userId:       string;
+  portalId:     string;
+  portalName:   string;
+  insType:      InsuranceType;
+  regNumber:    string | null;
+  vehicleMake:  string | null;
+  vehicleModel: string | null;
+  premium:      number | null;
+  idv:          number | null;
+  quoteData:    Record<string, unknown>;
+  screenshotKey: string | null;
+  createdAt:    string;
+  expiresAt:    string;
+}
+
+// ── Audit events ───────────────────────────────────────────────────────────
+
+export type AuditAction =
+  | 'session_start'
+  | 'document_uploaded'
+  | 'ocr_complete'
+  | 'ocr_failed'
+  | 'field_collected_chat'
+  | 'fields_confirmed'
+  | 'browser_context_assigned'
+  | 'browser_context_queued'
+  | 'portal_login'
+  | 'form_step_filled'
+  | 'form_step_failed'
+  | 'quote_generated'
+  | 'quote_failed'
+  | 'session_end'
+  | 'admin_action';
+
+export type AuditOutcome = 'success' | 'failure' | 'pending';
+
+export interface AuditEvent {
+  id?:           string;
+  ts?:           string;
+  userId:        string;
+  userEmail:     string;
+  sessionId:     string;
+  portalId?:     string;
+  insType?:      InsuranceType;
+  action:        AuditAction;
+  outcome:       AuditOutcome;
+  durationMs?:   number;
+  meta?:         Record<string, unknown>;
+}
+
+// ── JWT payload (mirrors backend) ─────────────────────────────────────────
+
+export type UserRole = 'user' | 'admin';
+
+export interface JwtPayload {
+  sub:      string;
+  username: string;
+  email:    string;
+  role:     UserRole;
+  iat?:     number;
+  exp?:     number;
+}

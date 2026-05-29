@@ -1,0 +1,907 @@
+{
+  "portal_id": "uiic",
+  "discovered_at": "2026-05-28T18:23:16.746Z",
+  "login_verified": true,
+  "nav_steps": [
+    {
+      "label": "Motor Calculator",
+      "action": "navigate",
+      "value": "https://www.uiic.in/CustomerPortalWeb/PremiumCalculator/data/MotorQuote.html#/motorQuote?agentId=ALELTD004&agentCode=BRC000025200004"
+    },
+    {
+      "label": "Select Private Car",
+      "action": "select_option",
+      "value": "#vehicleType",
+      "option": "18"
+    },
+    {
+      "label": "Confirm Cover Type",
+      "action": "click_text",
+      "value": "Ok"
+    },
+    {
+      "label": "Full Form",
+      "action": "click_selector",
+      "value": "[name=choosePlan]"
+    }
+  ],
+  "steps": [
+    {
+      "step_id": "home",
+      "url": "https://www.uiic.in/GCWebPortal/login/HomeAction.do",
+      "page_title": "UIIC - Intermediary Portal Home",
+      "structure_hash": "e3b0c44298fc",
+      "form_fields": [],
+      "buttons": [
+        {
+          "id": "",
+          "text": "Toggle navigation",
+          "selector": ".navbar-toggle"
+        },
+        {
+          "id": "",
+          "text": "×",
+          "selector": ".close"
+        },
+        {
+          "id": "",
+          "text": "Close",
+          "selector": ".btn"
+        },
+        {
+          "id": "",
+          "text": "×Close",
+          "selector": ".close"
+        }
+      ],
+      "nav_links": [
+        {
+          "text": "ALERT INSURANCE BROKERS PVT. LTD_4 (BROKER ) Last Login : 28/05/2026 23:53",
+          "href": "#"
+        },
+        {
+          "text": "Change Password",
+          "href": "../PasswordMgmtBKA/PasswordMgmtDeal.do?USERID=BRC000025200004&INTERDOCODE=BRC000025200004&INTERMEDIARY=BRC0000252"
+        },
+        {
+          "text": "Check CD Balance",
+          "href": "#"
+        },
+        {
+          "text": "User Profile",
+          "href": "../userProfile/UserProfileAction.do?USERID=BRC000025200004"
+        },
+        {
+          "text": "Log Out",
+          "href": "../login/LogoutAction.do"
+        },
+        {
+          "text": "HOME",
+          "href": "../login/HomeAction.do"
+        },
+        {
+          "text": "Accounting Activities",
+          "href": "javascript:;"
+        },
+        {
+          "text": "Premium collection Cum Policy generation",
+          "href": "../tb/PendingForPremiCollectionFirstAction.do?userCode=BRC000025200004&USERTYPE=BROKER&officeCode=BRC000025200004&companyCode=BRC0000252&ENTERPRISE=TRUE"
+        },
+        {
+          "text": "Mobile Scroll Collection",
+          "href": "../MobileScroll/MobileScrollPortal.do?userCode=BRC000025200004"
+        },
+        {
+          "text": "CD Replenishment Receipt Generation",
+          "href": "../gcDealerMisc/NonPremiumCollReceiptAction.do?param=NonPremiumCollReceipt&userCode=BRC000025200004&USERTYPE=BROKER&officeCode=BRC000025200004&COMPANYCODE=BRC0000252"
+        },
+        {
+          "text": "Pay In Slip Generation(cheques)",
+          "href": "../motor/payInSlipFirst.do?userCode=BRC000025200004&USERTYPE=BROKER&officeCode=BRC000025200004&companyCode=BRC0000252"
+        },
+        {
+          "text": "Duplicate Pay In Slip Generation(cheques)",
+          "href": "../motor/duppayInSlipFirst.do?userCode=BRC000025200004&USERTYPE=BROKER&officeCode=BRC000025200004&companyCode=BRC0000252"
+        },
+        {
+          "text": "Premium Collection Through CD For Transit Policy",
+          "href": "../Bulkupload_transit_config/TransitCDPopulation.do?userCode=USERCODE&USERTYPE=USERTYPE&officeCode=OFFICECODE&companyCode=BRC0000252"
+        },
+        {
+          "text": "Replenish CD Balance Through Net Banking",
+          "href": "#"
+        },
+        {
+          "text": "View Payment Link",
+          "href": "../gcDealerMisc/PaymentLinkViewAction.do?param=ViewPage"
+        },
+        {
+          "text": "Policy Transaction",
+          "href": "javascript:;"
+        },
+        {
+          "text": "Make New/Renew Policy",
+          "href": "../portal/MenuAction.do?method=strbtn"
+        },
+        {
+          "text": "Proposal Modification",
+          "href": "../motor/proposalModification.do?userCode=BRC000025200004&USERTYPE=BROKER&officeCode=BRC000025200004&COMPANYCODE=BRC0000252&proposalType=11&ENTERPRISE=TRUE&POLICY=Y&parameter=proposalModify"
+        },
+        {
+          "text": "Renewal Notice Generation",
+          "href": "../RenewalNotice/RenewalNoticeFirstAction.do?param=strbtnst"
+        },
+        {
+          "text": "Transit Policy Bulk Upload",
+          "href": "../Bulkupload_transit_config/GCBulkUploadFirstActionT.do?userCode=BRC000025200004&USERTYPE=BROKER&officeCode=BRC000025200004&companyCode=BRC0000252&proposalType=11&ENTERPRISE=FALSE&APP_TYPE=GCDEALERPOL&policyType=0"
+        },
+        {
+          "text": "ABHA Creation & Verification",
+          "href": "../gcDealerMisc/AbhaCreation.do?pAbha=Y"
+        },
+        {
+          "text": "Download Endorsement Copy",
+          "href": "../FireEndorsement/FireEndorsementFirst.do"
+        },
+        {
+          "text": "View Reports and Queries",
+          "href": "javascript:;"
+        },
+        {
+          "text": "Policy Status Report",
+          "href": "../covernote/policyReportIntiate.do?userCode=BRC000025200004&USERTYPE=BROKER&officeCode=BRC000025200004&COMPANYCODE=BRC0000252"
+        },
+        {
+          "text": "Scroll Collection Mis Report",
+          "href": "../MobileScroll/ScrollMisReport.do?USERID=ALELTD004&userCode=BRC000025200004&USERTYPE=BROKER\n"
+        },
+        {
+          "text": "Payment Gateway Report",
+          "href": "../gcDealerMisc/PaymentGatewayReport.do?userCode=BRC000025200004&USERTYPE=BROKER"
+        },
+        {
+          "text": "CD Replensih by PG report",
+          "href": "../gcDealerMisc/PaymentEntryByCardAction.do?param=strtReport&userCode=BRC000025200004&USERTYPE=BROKER&officeCode=BRC000025200004&COMPANYCODE=BRC0000252"
+        },
+        {
+          "text": "User Wise Policy Report",
+          "href": "../motor/AshokLeylandMISFirst.do?userCode=BRC000025200004&USERTYPE=BROKER&officeCode=BRC000025200004&companyCode=BRC0000252&proposalType=11&ENTERPRISE=TRUE"
+        },
+        {
+          "text": "Search Motor Policy",
+          "href": "../motor/SearchMotorPolicyPopulateUserList.do?userCode=BRC000025200004&USERTYPE=BROKER&officeCode=BRC000025200004&companyCode=BRC0000252&proposalType=11&ENTERPRISE=TRUE"
+        },
+        {
+          "text": "Transit Policy Batch Report",
+          "href": "../Bulkupload_transit_config/MotorPolicyRptAction.do?param=strbtn&USERCODE=BRC000025200004"
+        },
+        {
+          "text": "Transit Policy Payment Status Report",
+          "href": "../Bulkupload_transit_config/PaymentStatus.do?USERCODE=BRC000025200004&param=strbtn&USERTYPE=BROKER&officeCode=BRC000025200004&companyCode=BRC0000252"
+        },
+        {
+          "text": "Policy Status Report",
+          "href": "../covernote/policyReportIntiate.do?userCode=BRC000025200004&USERTYPE=BROKER&officeCode=BRC000025200004&COMPANYCODE=BRC0000252"
+        },
+        {
+          "text": "GC Core Reports",
+          "href": "javascript:;"
+        },
+        {
+          "text": "CD Balance Report",
+          "href": "../xslreport/intermediaryDetails.do?userCode=BRC000025200004&USERTYPE=BROKER&officeCode=BRC000025200004&COMPANYCODE=BRC0000252&proposalType=11&INSDOCODE=230700&departmentCode=31&policyType=2&transactionId=3198&vehicleType=18&reporttype=CDBalance"
+        },
+        {
+          "text": "Premium Register Report",
+          "href": "../xslreport/intermediaryDetails.do?userCode=BRC000025200004&USERTYPE=BROKER&officeCode=BRC000025200004&COMPANYCODE=BRC0000252&proposalType=11&INSDOCODE=230700&departmentCode=31&policyType=2&transactionId=3198&vehicleType=18&reporttype=PremiumRegister"
+        },
+        {
+          "text": "Renewal Details Report",
+          "href": "../xslreport/intermediaryDetails.do?userCode=BRC000025200004&USERTYPE=BROKER&officeCode=BRC000025200004&COMPANYCODE=BRC0000252&proposalType=11&INSDOCODE=230700&departmentCode=31&policyType=2&transactionId=3198&vehicleType=18&reporttype=RenewalReport"
+        },
+        {
+          "text": "Policy Renewal Report",
+          "href": "../xslreport/intermediaryDetails.do?userCode=BRC000025200004&USERTYPE=BROKER&officeCode=BRC000025200004&COMPANYCODE=BRC0000252&proposalType=11&INSDOCODE=230700&departmentCode=31&policyType=2&transactionId=3198&vehicleType=18&reporttype=PolExp"
+        },
+        {
+          "text": "Policy Lapse Report",
+          "href": "../xslreport/intermediaryDetails.do?userCode=BRC000025200004&USERTYPE=BROKER&officeCode=BRC000025200004&COMPANYCODE=BRC0000252&proposalType=11&INSDOCODE=230700&departmentCode=31&policyType=2&transactionId=3198&vehicleType=18&reporttype=PolLaps"
+        },
+        {
+          "text": "Download Renewal and Lapse Report",
+          "href": "../xslreport/DownloadGCReportAction.do?p=strbtn&userCode=BRC000025200004&mode=logged"
+        },
+        {
+          "text": "Intermediary Commission Report",
+          "href": "../xslreport/AgentCommReportAction.do?p=strbtn&userCode=BRC000025200004&mode=logged"
+        },
+        {
+          "text": "Check Claim Status Report",
+          "href": "../xslreport/ClaimStatusAction.do?p=strbtn&userCode=BRC000025200004&mode=logged"
+        },
+        {
+          "text": "Policy Wise Brokerage Report",
+          "href": "../xslreport/intermediaryDetails.do?userCode=BRC000025200004&USERTYPE=BROKER&officeCode=BRC000025200004&COMPANYCODE=BRC0000252&proposalType=11&INSDOCODE=230700&departmentCode=31&policyType=2&transactionId=3198&vehicleType=18&reporttype=BrokerageReport"
+        },
+        {
+          "text": "Policy Documents",
+          "href": "javascript:;"
+        },
+        {
+          "text": "Duplicate Policy Documents Generation",
+          "href": "../accounts/DuplicateDocumentFirstAction.do?"
+        },
+        {
+          "text": "View Break In Documents",
+          "href": "../accounts/breakInPolicyDocView.do?userCode=BRC000025200004&USERTYPE=BROKER&officeCode=BRC000025200004&COMPANYCODE=BRC0000252&INTMDOCODE=BRC000025200004&INTMCODE=BRC0000252&INSDOCODE=BRC000025200004"
+        },
+        {
+          "text": "GC Customer Management",
+          "href": "javascript:;"
+        },
+        {
+          "text": "GC Customer Creation",
+          "href": "../CustomerCreation/CustomerCreationFirst.do?userCode=BRC000025200004&USERTYPE=BROKER&officeCode=BRC000025200004&COMPANYCODE=BRC0000252"
+        },
+        {
+          "text": "View/Modify Customer",
+          "href": "../CustomerCreation/CustomerViewModifyFirst.do?userCode=BRC000025200004&USERTYPE=BROKER&officeCode=BRC000025200004&COMPANYCODE=BRC0000252"
+        },
+        {
+          "text": "Claims Management",
+          "href": "javascript:;"
+        },
+        {
+          "text": "Ashok Leyland Dealer Report",
+          "href": "../ashokLeyland/ALDealerReportDashboard.do?USERID=ALELTD004&userCode=BRC000025200004&USERTYPE=BROKER&INTERDOCODE=BRC000025200004"
+        },
+        {
+          "text": "Ashok Leyland Claim Intimation",
+          "href": "../ashokLeyland/ALPolicyDetailsFetch.do?USERID=ALELTD004&userCode=BRC000025200004&USERTYPE=BROKER"
+        },
+        {
+          "text": "Ashok Leyland Dashboard",
+          "href": "../ashokLeyland/ALPolicyDetailsDashboard.do?USERID=ALELTD004&userCode=BRC000025200004&USERTYPE=BROKER&INTERDOCODE=BRC000025200004"
+        },
+        {
+          "text": "Ashok Leyland Birt Claim Report",
+          "href": "../xslreport/CDReport.do?userCode=BRC000025200004&USERTYPE=BROKER&officeCode=BRC000025200004&COMPANYCODE=BRC0000252&proposalType=11&INSDOCODE=230700&departmentCode=31&policyType=2&transactionId=3198&vehicleType=18&reporttype=alclaimreport"
+        },
+        {
+          "text": "Motor OD Claim Intimation Report",
+          "href": "../GCclaim/MotorODClaimIntimationReportFirst.do?param=strbtn&userCode=BRC000025200004&USERTYPE=BROKER&OfficeCode=BRC000025200004&COMPANYCODE=BRC0000252"
+        },
+        {
+          "text": "Motor OD Claim Intimation",
+          "href": "../GCclaim/GCIntermediaryClaim.do?param=claimFirst&USERID=BRC000025200004&USERTYPE=BROKER&INTERDOCODE=BRC000025200004&INTERMEDIARY=BRC0000252"
+        },
+        {
+          "text": "https://billpay.setu.co/landing/1259677852186444807",
+          "href": "https://billpay.setu.co/landing/1259677852186444807"
+        },
+        {
+          "text": "Motor Premium Calculator",
+          "href": "https://www.uiic.in/CustomerPortalWeb/PremiumCalculator/data/MotorQuote.html#/motorQuote?agentId=ALELTD004&agentCode=BRC000025200004"
+        },
+        {
+          "text": "Health Policy Premium Calculator",
+          "href": "https://www.uiic.in/CustomerAppLive/data/HealthPolicyNewQuote.html#/healthQuoteNew?p=new&usertype=agent&intmcode=BRC000025200004&devofficerCode=BRC0000252&officode=280602&userid=ALELTD004"
+        },
+        {
+          "text": "Individual Health E-Proposal Form",
+          "href": "https://www.uiic.in/CustomerAppLive/data/ProposalIHPhome.html#/ProposalFormMainBody?usertype=agent&intmcode=QlJDMDAwMDI1MjAwMDA0&devofficerCode=QlJDMDAwMDI1Mg==&officode=MjgwNjAy&userid=QUxFTFREMDA0"
+        },
+        {
+          "text": "Family Medicare E-Proposal Form",
+          "href": "https://www.uiic.in/CustomerAppLive/data/ProposalFMhome.html#/ProposalFormMainBody?usertype=agent&intmcode=QlJDMDAwMDI1MjAwMDA0&devofficerCode=QlJDMDAwMDI1Mg==&officode=MjgwNjAy&userid=QUxFTFREMDA0"
+        }
+      ],
+      "screenshot_file": "screenshot_home.png"
+    },
+    {
+      "step_id": "motor_calculator",
+      "url": "https://www.uiic.in/CustomerPortalWeb/PremiumCalculator/data/MotorQuote.html#/motorQuote?agentId=ALELTD004&agentCode=BRC000025200004",
+      "page_title": "Motor Policy",
+      "structure_hash": "4caa3ff010e0",
+      "form_fields": [
+        {
+          "id": "",
+          "name": "policyType",
+          "type": "radio",
+          "label": "Package Policy",
+          "selector": "[name=\"policyType\"]"
+        },
+        {
+          "id": "",
+          "name": "policyType",
+          "type": "radio",
+          "label": "Liability Only Policy",
+          "selector": "[name=\"policyType\"]"
+        },
+        {
+          "id": "",
+          "name": "policyType",
+          "type": "radio",
+          "label": "StandAlone OD Policy",
+          "selector": "[name=\"policyType\"]"
+        },
+        {
+          "id": "vehicleType",
+          "name": "vehicleType",
+          "type": "select-one",
+          "label": "",
+          "selector": "#vehicleType",
+          "options": [
+            {
+              "value": "",
+              "text": "Select an Option"
+            },
+            {
+              "value": "26",
+              "text": "(E-Cart)-Private Carriers"
+            },
+            {
+              "value": "25",
+              "text": "(E-Cart)-Public Carriers"
+            },
+            {
+              "value": "24",
+              "text": "E-Rickshaw"
+            },
+            {
+              "value": "22",
+              "text": "Goods Carrying (3-wh and Pedal Cycles)-Private Carriers"
+            },
+            {
+              "value": "21",
+              "text": "Goods Carrying (3-wh and Pedal Cycles)-Public Carriers"
+            },
+            {
+              "value": "20",
+              "text": "Goods Carrying(Other than 3-wh)-Private Carriers"
+            },
+            {
+              "value": "19",
+              "text": "Goods Carrying(Other than 3-wh)-Public Carriers"
+            },
+            {
+              "value": "12",
+              "text": "Miscellaneous And Special Type of Vehicles"
+            },
+            {
+              "value": "3",
+              "text": "Motorcycle / Scooter"
+            },
+            {
+              "value": "23",
+              "text": "Pass Carrying - 2-wh"
+            },
+            {
+              "value": "16",
+              "text": "Pass Carrying - 3-wh (7 <= Carrying <18)"
+            },
+            {
+              "value": "8",
+              "text": "Pass Carrying - 3-wh (Carrying <=6)"
+            },
+            {
+              "value": "11",
+              "text": "Pass Carrying - 4-wh (Carrying > 6), 3-wh (Carrying >18)"
+            },
+            {
+              "value": "9",
+              "text": "Pass Carrying - 4-wh (Carrying <=6)"
+            },
+            {
+              "value": "18",
+              "text": "Private Car"
+            }
+          ]
+        },
+        {
+          "id": "dateOfIssueOfPolicyString",
+          "name": "dateOfIssueOfPolicyString",
+          "type": "text",
+          "label": "",
+          "selector": "#dateOfIssueOfPolicyString"
+        },
+        {
+          "id": "dateOfPurchaseString",
+          "name": "dateOfPurchaseString",
+          "type": "text",
+          "label": "",
+          "selector": "#dateOfPurchaseString"
+        },
+        {
+          "id": "vehicleZone",
+          "name": "vehicleZone",
+          "type": "select-one",
+          "label": "",
+          "selector": "#vehicleZone",
+          "options": [
+            {
+              "value": "? object:null ?",
+              "text": ""
+            },
+            {
+              "value": "Zone-A",
+              "text": "A"
+            },
+            {
+              "value": "Zone-B",
+              "text": "B"
+            },
+            {
+              "value": "Zone-C",
+              "text": "C"
+            }
+          ]
+        }
+      ],
+      "buttons": [
+        {
+          "id": "",
+          "text": "Ok",
+          "selector": "[name=\"choosePlan\"]"
+        },
+        {
+          "id": "",
+          "text": "Close",
+          "selector": "[name=\"choosePlan\"]"
+        },
+        {
+          "id": "",
+          "text": "Click To See Premium",
+          "selector": "[name=\"choosePlan\"]"
+        },
+        {
+          "id": "",
+          "text": "Click To See Premium",
+          "selector": "[name=\"choosePlan\"]"
+        },
+        {
+          "id": "",
+          "text": "Close",
+          "selector": "[name=\"choosePlan\"]"
+        }
+      ],
+      "nav_links": [
+        {
+          "text": "Close",
+          "href": "../data/customer.html#/index"
+        }
+      ],
+      "screenshot_file": "screenshot_motor_calculator.png"
+    },
+    {
+      "step_id": "select_private_car",
+      "url": "https://www.uiic.in/CustomerPortalWeb/PremiumCalculator/data/MotorQuote.html#/motorQuote?agentId=ALELTD004&agentCode=BRC000025200004",
+      "page_title": "Motor Policy",
+      "structure_hash": "b86b5756d017",
+      "form_fields": [
+        {
+          "id": "",
+          "name": "policyType",
+          "type": "radio",
+          "label": "Package Policy",
+          "selector": "[name=\"policyType\"]"
+        },
+        {
+          "id": "",
+          "name": "policyType",
+          "type": "radio",
+          "label": "Liability Only Policy",
+          "selector": "[name=\"policyType\"]"
+        },
+        {
+          "id": "",
+          "name": "policyType",
+          "type": "radio",
+          "label": "StandAlone OD Policy",
+          "selector": "[name=\"policyType\"]"
+        },
+        {
+          "id": "vehicleType",
+          "name": "vehicleType",
+          "type": "select-one",
+          "label": "",
+          "selector": "#vehicleType",
+          "options": [
+            {
+              "value": "",
+              "text": "Select an Option"
+            },
+            {
+              "value": "26",
+              "text": "(E-Cart)-Private Carriers"
+            },
+            {
+              "value": "25",
+              "text": "(E-Cart)-Public Carriers"
+            },
+            {
+              "value": "24",
+              "text": "E-Rickshaw"
+            },
+            {
+              "value": "22",
+              "text": "Goods Carrying (3-wh and Pedal Cycles)-Private Carriers"
+            },
+            {
+              "value": "21",
+              "text": "Goods Carrying (3-wh and Pedal Cycles)-Public Carriers"
+            },
+            {
+              "value": "20",
+              "text": "Goods Carrying(Other than 3-wh)-Private Carriers"
+            },
+            {
+              "value": "19",
+              "text": "Goods Carrying(Other than 3-wh)-Public Carriers"
+            },
+            {
+              "value": "12",
+              "text": "Miscellaneous And Special Type of Vehicles"
+            },
+            {
+              "value": "3",
+              "text": "Motorcycle / Scooter"
+            },
+            {
+              "value": "23",
+              "text": "Pass Carrying - 2-wh"
+            },
+            {
+              "value": "16",
+              "text": "Pass Carrying - 3-wh (7 <= Carrying <18)"
+            },
+            {
+              "value": "8",
+              "text": "Pass Carrying - 3-wh (Carrying <=6)"
+            },
+            {
+              "value": "11",
+              "text": "Pass Carrying - 4-wh (Carrying > 6), 3-wh (Carrying >18)"
+            },
+            {
+              "value": "9",
+              "text": "Pass Carrying - 4-wh (Carrying <=6)"
+            },
+            {
+              "value": "18",
+              "text": "Private Car"
+            }
+          ]
+        },
+        {
+          "id": "lonTermCoverTypeProp",
+          "name": "lonTermCoverTypeProp",
+          "type": "select-one",
+          "label": "",
+          "selector": "#lonTermCoverTypeProp",
+          "options": [
+            {
+              "value": "",
+              "text": "Select an Option"
+            },
+            {
+              "value": "string:1",
+              "text": "1 Year OD 3 Year Liability"
+            }
+          ]
+        },
+        {
+          "id": "dateOfIssueOfPolicyString",
+          "name": "dateOfIssueOfPolicyString",
+          "type": "text",
+          "label": "",
+          "selector": "#dateOfIssueOfPolicyString"
+        },
+        {
+          "id": "dateOfPurchaseString",
+          "name": "dateOfPurchaseString",
+          "type": "text",
+          "label": "",
+          "selector": "#dateOfPurchaseString"
+        },
+        {
+          "id": "cubicCapacity",
+          "name": "cubicCapacity",
+          "type": "select-one",
+          "label": "",
+          "selector": "#cubicCapacity",
+          "options": [
+            {
+              "value": "1000",
+              "text": "Upto 1000 CC"
+            },
+            {
+              "value": "1500",
+              "text": "1001-1500 CC"
+            },
+            {
+              "value": "2000",
+              "text": "Exceeding 1500 CC"
+            }
+          ]
+        },
+        {
+          "id": "vehicleZone",
+          "name": "vehicleZone",
+          "type": "select-one",
+          "label": "",
+          "selector": "#vehicleZone",
+          "options": [
+            {
+              "value": "? object:null ?",
+              "text": ""
+            },
+            {
+              "value": "Zone-A",
+              "text": "A"
+            },
+            {
+              "value": "Zone-B",
+              "text": "B"
+            }
+          ]
+        },
+        {
+          "id": "iibAutoRiskIdv",
+          "name": "iibAutoRiskIdv",
+          "type": "text",
+          "label": "",
+          "selector": "#iibAutoRiskIdv"
+        },
+        {
+          "id": "odDisc",
+          "name": "",
+          "type": "number",
+          "label": "",
+          "selector": "#odDisc"
+        }
+      ],
+      "buttons": [
+        {
+          "id": "",
+          "text": "Ok",
+          "selector": "[name=\"choosePlan\"]"
+        },
+        {
+          "id": "",
+          "text": "Close",
+          "selector": "[name=\"choosePlan\"]"
+        },
+        {
+          "id": "",
+          "text": "Click To See Premium",
+          "selector": "[name=\"choosePlan\"]"
+        },
+        {
+          "id": "",
+          "text": "Click To See Premium",
+          "selector": "[name=\"choosePlan\"]"
+        },
+        {
+          "id": "",
+          "text": "Close",
+          "selector": "[name=\"choosePlan\"]"
+        }
+      ],
+      "nav_links": [
+        {
+          "text": "Close",
+          "href": "../data/customer.html#/index"
+        }
+      ],
+      "screenshot_file": "screenshot_select_private_car.png"
+    },
+    {
+      "step_id": "confirm_cover_type",
+      "url": "https://www.uiic.in/CustomerPortalWeb/PremiumCalculator/data/MotorQuote.html#/motorQuote?agentId=ALELTD004&agentCode=BRC000025200004",
+      "page_title": "Motor Policy",
+      "structure_hash": "947cebb0da1d",
+      "form_fields": [
+        {
+          "id": "vehicleType",
+          "name": "vehicleType",
+          "type": "select-one",
+          "label": "",
+          "selector": "#vehicleType",
+          "options": [
+            {
+              "value": "",
+              "text": "Select an Option"
+            },
+            {
+              "value": "26",
+              "text": "(E-Cart)-Private Carriers"
+            },
+            {
+              "value": "25",
+              "text": "(E-Cart)-Public Carriers"
+            },
+            {
+              "value": "24",
+              "text": "E-Rickshaw"
+            },
+            {
+              "value": "22",
+              "text": "Goods Carrying (3-wh and Pedal Cycles)-Private Carriers"
+            },
+            {
+              "value": "21",
+              "text": "Goods Carrying (3-wh and Pedal Cycles)-Public Carriers"
+            },
+            {
+              "value": "20",
+              "text": "Goods Carrying(Other than 3-wh)-Private Carriers"
+            },
+            {
+              "value": "19",
+              "text": "Goods Carrying(Other than 3-wh)-Public Carriers"
+            },
+            {
+              "value": "12",
+              "text": "Miscellaneous And Special Type of Vehicles"
+            },
+            {
+              "value": "3",
+              "text": "Motorcycle / Scooter"
+            },
+            {
+              "value": "23",
+              "text": "Pass Carrying - 2-wh"
+            },
+            {
+              "value": "16",
+              "text": "Pass Carrying - 3-wh (7 <= Carrying <18)"
+            },
+            {
+              "value": "8",
+              "text": "Pass Carrying - 3-wh (Carrying <=6)"
+            },
+            {
+              "value": "11",
+              "text": "Pass Carrying - 4-wh (Carrying > 6), 3-wh (Carrying >18)"
+            },
+            {
+              "value": "9",
+              "text": "Pass Carrying - 4-wh (Carrying <=6)"
+            },
+            {
+              "value": "18",
+              "text": "Private Car"
+            }
+          ]
+        },
+        {
+          "id": "lonTermCoverTypeProp",
+          "name": "lonTermCoverTypeProp",
+          "type": "select-one",
+          "label": "",
+          "selector": "#lonTermCoverTypeProp",
+          "options": [
+            {
+              "value": "",
+              "text": "Select an Option"
+            },
+            {
+              "value": "string:1",
+              "text": "1 Year OD 3 Year Liability"
+            }
+          ]
+        },
+        {
+          "id": "dateOfIssueOfPolicyString",
+          "name": "dateOfIssueOfPolicyString",
+          "type": "text",
+          "label": "",
+          "selector": "#dateOfIssueOfPolicyString"
+        },
+        {
+          "id": "dateOfPurchaseString",
+          "name": "dateOfPurchaseString",
+          "type": "text",
+          "label": "",
+          "selector": "#dateOfPurchaseString"
+        },
+        {
+          "id": "cubicCapacity",
+          "name": "cubicCapacity",
+          "type": "select-one",
+          "label": "",
+          "selector": "#cubicCapacity",
+          "options": [
+            {
+              "value": "1000",
+              "text": "Upto 1000 CC"
+            },
+            {
+              "value": "1500",
+              "text": "1001-1500 CC"
+            },
+            {
+              "value": "2000",
+              "text": "Exceeding 1500 CC"
+            }
+          ]
+        },
+        {
+          "id": "vehicleZone",
+          "name": "vehicleZone",
+          "type": "select-one",
+          "label": "",
+          "selector": "#vehicleZone",
+          "options": [
+            {
+              "value": "? object:null ?",
+              "text": ""
+            },
+            {
+              "value": "Zone-A",
+              "text": "A"
+            },
+            {
+              "value": "Zone-B",
+              "text": "B"
+            }
+          ]
+        },
+        {
+          "id": "iibAutoRiskIdv",
+          "name": "iibAutoRiskIdv",
+          "type": "text",
+          "label": "",
+          "selector": "#iibAutoRiskIdv"
+        },
+        {
+          "id": "odDisc",
+          "name": "",
+          "type": "number",
+          "label": "",
+          "selector": "#odDisc"
+        }
+      ],
+      "buttons": [
+        {
+          "id": "",
+          "text": "Close",
+          "selector": "[name=\"choosePlan\"]"
+        },
+        {
+          "id": "",
+          "text": "Click To See Premium",
+          "selector": "[name=\"choosePlan\"]"
+        },
+        {
+          "id": "",
+          "text": "Click To See Premium",
+          "selector": "[name=\"choosePlan\"]"
+        },
+        {
+          "id": "",
+          "text": "Close",
+          "selector": "[name=\"choosePlan\"]"
+        }
+      ],
+      "nav_links": [
+        {
+          "text": "Close",
+          "href": "../data/customer.html#/index"
+        }
+      ],
+      "screenshot_file": "screenshot_confirm_cover_type.png"
+    },
+    {
+      "step_id": "full_form",
+      "url": "https://www.uiic.in/CustomerPortalWeb/PremiumCalculator/home.html",
+      "page_title": "HTTP Status 404 – Not Found",
+      "structure_hash": "e3b0c44298fc",
+      "form_fields": [],
+      "buttons": [],
+      "nav_links": [],
+      "screenshot_file": "screenshot_full_form.png"
+    }
+  ]
+}
