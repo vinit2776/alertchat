@@ -109,7 +109,7 @@ export interface AuditEvent {
 
 // ── JWT payload (mirrors backend) ─────────────────────────────────────────
 
-export type UserRole = 'user' | 'admin';
+export type UserRole = 'super_admin' | 'chat_user';
 
 export interface JwtPayload {
   sub:      string;

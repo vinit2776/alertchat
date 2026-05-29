@@ -12,7 +12,8 @@ export default function LoginPage({ onLogin }: Props) {
   const [error, setError]       = useState('');
   const [loading, setLoading]   = useState(false);
 
-  const apiBase = import.meta.env.VITE_API_URL || '';
+  // Auth now lives in the automation service
+  const apiBase = (import.meta as any).env.VITE_AUTOMATION_URL || 'http://localhost:4001';
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();

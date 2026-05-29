@@ -21,9 +21,11 @@ type AdminView = 'dashboard' | 'sessions' | 'companies' | 'quotes';
 interface Props {
   token: string;
   onBack: () => void;
+  onCompanies?: () => void;
+  onUsers?: () => void;
 }
 
-export default function AdminDashboard({ token, onBack }: Props) {
+export default function AdminDashboard({ token, onBack, onCompanies, onUsers }: Props) {
   const [view, setView]           = useState<AdminView>('dashboard');
   const [analytics, setAnalytics] = useState<Analytics | null>(null);
   const [loading, setLoading]     = useState(true);
@@ -54,9 +56,11 @@ export default function AdminDashboard({ token, onBack }: Props) {
       <div style={s.header}>
         <button style={s.backBtn} onClick={onBack}>← Back</button>
         <div style={s.headerTitle}>Admin Dashboard</div>
-        {analytics && (
-          <div style={s.liveBadge}>● {analytics.liveSessions} live</div>
-        )}
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          {onUsers && <button style={s.headerBtn} onClick={onUsers}>👥 Users</button>}
+          {onCompanies && <button style={s.headerBtn} onClick={onCompanies}>🏢 Companies</button>}
+          {analytics && <div style={s.liveBadge}>● {analytics.liveSessions} live</div>}
+        </div>
       </div>
 
       <div style={s.layout}>
@@ -339,6 +343,7 @@ const s: Record<string, React.CSSProperties> = {
   backBtn:    { background: 'rgba(255,255,255,0.15)', border: 'none', borderRadius: 8, color: '#fff', padding: '6px 12px', cursor: 'pointer', fontSize: 14 },
   headerTitle: { fontWeight: 700, fontSize: 16, flex: 1 },
   liveBadge:  { fontSize: 13, color: '#86efac', fontWeight: 600 },
+  headerBtn:  { background: 'rgba(255,255,255,0.15)', border: 'none', borderRadius: 8, color: '#fff', padding: '6px 12px', cursor: 'pointer', fontSize: 13 },
   layout:     { display: 'flex', flex: 1, overflow: 'hidden' },
   sidebar:    { width: 180, background: '#fff', borderRight: '1px solid #e5e7eb', display: 'flex', flexDirection: 'column', padding: '12px 0', flexShrink: 0 },
   navBtn:     { padding: '10px 20px', background: 'none', border: 'none', textAlign: 'left', cursor: 'pointer', fontSize: 14, color: '#555' },

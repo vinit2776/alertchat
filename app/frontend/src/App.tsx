@@ -4,6 +4,7 @@ import PortalChatPage  from './pages/PortalChatPage';
 import QuoteHistory    from './pages/QuoteHistory';
 import AdminDashboard  from './pages/AdminDashboard';
 import CompanyRegistry from './pages/CompanyRegistry';
+import UserManagement  from './pages/UserManagement';
 import Dashboard       from './pages/Dashboard';
 import QuotationPage   from './pages/QuotationPage';
 import PolicyPage      from './pages/PolicyPage';
@@ -14,14 +15,15 @@ import ChatPage        from './pages/ChatPage';
 import './App.css';
 
 export type Page =
-  | 'chat'            // portal automation chat (new)
+  | 'chat'            // portal automation chat
   | 'history'         // 7-day quote history
-  | 'admin'           // admin dashboard
-  | 'admin-companies' // company registry
+  | 'admin'           // admin dashboard (super_admin)
+  | 'admin-companies' // insurance company registry (super_admin)
+  | 'admin-users'     // user management (super_admin)
   | 'legacy-chat'     // old CHI health direct chat
   | 'dashboard' | 'quotation' | 'policy' | 'status' | 'pdf' | 'auth';
 
-interface UserInfo { role: string; username: string }
+export interface UserInfo { role: string; username: string; email?: string; id?: string }
 
 function getStoredToken(): string | null { return localStorage.getItem('chi_token'); }
 function getStoredUser(): UserInfo | null {
@@ -46,27 +48,45 @@ export default function App() {
     setToken(null); setUser(null); setPage('chat');
   }
 
-  const isAdmin = user?.role === 'admin';
+  const isSuperAdmin = user?.role === 'super_admin';
 
   if (!token) {
     return <LoginPage onLogin={handleLogin} />;
   }
 
-  // Full-screen pages (no nav bar)
+  // ── Chat user — only sees chat + history ────────────────────────────────
+  if (!isSuperAdmin) {
+    if (page === 'history') {
+      return <QuoteHistory token={token} onBack={() => setPage('chat')} />;
+    }
+    return (
+      <PortalChatPage token={token} onLogout={handleLogout}
+        onShowHistory={() => setPage('history')}
+        isAdmin={false} />
+    );
+  }
+
+  // ── Super admin — full access ───────────────────────────────────────────
   if (page === 'chat') {
     return <PortalChatPage token={token} onLogout={handleLogout}
       onShowHistory={() => setPage('history')}
-      onShowAdmin={isAdmin ? () => setPage('admin') : undefined}
-      isAdmin={isAdmin} />;
+      onShowAdmin={() => setPage('admin')}
+      isAdmin={true} />;
   }
   if (page === 'history') {
     return <QuoteHistory token={token} onBack={() => setPage('chat')} />;
   }
-  if (page === 'admin' && isAdmin) {
-    return <AdminDashboard token={token} onBack={() => setPage('chat')} />;
+  if (page === 'admin') {
+    return <AdminDashboard token={token}
+      onBack={() => setPage('chat')}
+      onCompanies={() => setPage('admin-companies')}
+      onUsers={() => setPage('admin-users')} />;
   }
-  if (page === 'admin-companies' && isAdmin) {
+  if (page === 'admin-companies') {
     return <CompanyRegistry token={token} onBack={() => setPage('admin')} />;
+  }
+  if (page === 'admin-users') {
+    return <UserManagement token={token} onBack={() => setPage('admin')} currentUserId={user?.id ?? ''} />;
   }
   if (page === 'legacy-chat') {
     return (
@@ -92,7 +112,7 @@ export default function App() {
           </div>
           <nav className="app-nav">
             <button className="nav-btn active" onClick={() => setPage('chat')}>💬 Chat</button>
-            {isAdmin && <button className="nav-btn" onClick={() => setPage('admin')}>⚙️ Admin</button>}
+            <button className="nav-btn" onClick={() => setPage('admin')}>⚙️ Admin</button>
             <button className="nav-btn" onClick={() => setPage('history')}>📋 History</button>
             {(['dashboard', 'quotation', 'policy', 'status', 'pdf', 'auth', 'legacy-chat'] as Page[]).map(p => (
               <button key={p} onClick={() => setPage(p)} className={`nav-btn${page === p ? ' active' : ''}`}>
