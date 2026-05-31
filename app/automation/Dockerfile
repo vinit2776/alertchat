@@ -15,12 +15,9 @@ RUN npm ci
 RUN npx playwright install chromium --with-deps
 
 # ── Build TypeScript ────────────────────────────────────────────────────────
+# COPY . . already includes start.sh — no separate COPY needed
 COPY . .
-RUN npm run build
-
-# ── Startup script ──────────────────────────────────────────────────────────
-COPY start.sh ./
-RUN chmod +x start.sh
+RUN chmod +x start.sh && npm run build
 
 # Railway injects PORT env var — Express binds 0.0.0.0 by default
 EXPOSE 4001
