@@ -9,6 +9,7 @@ import historyRoutes  from './routes/history.routes';
 import adminRoutes    from './routes/admin.routes';
 import quoteRoutes    from './routes/quote.routes';
 import usersRoutes    from './routes/users.routes';
+import wizardRoutes   from './routes/wizard.routes';
 import { browserPool } from './session/pool';
 import { query, queryOne } from './db/client';
 
@@ -26,6 +27,7 @@ app.get('/health', (_req, res) => {
 app.use('/api/auth',      authRoutes);
 app.use('/api/users',     usersRoutes);
 app.use('/api/chat',      chatRoutes);
+app.use('/api/wizard',    wizardRoutes);
 app.use('/api/documents', documentRoutes);
 app.use('/api/history',   historyRoutes);
 app.use('/api/admin',     adminRoutes);

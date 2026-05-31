@@ -37,17 +37,36 @@ export type SessionStatus =
   | 'complete'      // quote generated
   | 'error';        // something went wrong
 
+export type InsurancePreference =
+  | 'cheapest_premium'
+  | 'private_insurer'
+  | 'govt_insurer'
+  | 'cashless_network'
+  | 'higher_idv'
+  | 'addon_zero_dep'
+  | 'addon_engine_protect'
+  | 'addon_rsa'
+  | 'addon_personal_accident';
+
+export interface ClaimsInfo {
+  hasClaim:        boolean;
+  claimCount?:     number;
+  totalAmount?:    number;   // ₹
+}
+
 export interface SessionState {
   sessionId:       string;
   userId:          string;
   insuranceType:   InsuranceType;
   selectedCompanies: string[];          // portal IDs to quote from
   extractedFields: Record<string, string>;   // from document OCR
-  collectedFields: Record<string, string>;   // from chat Q&A
+  collectedFields: Record<string, string>;   // from chat Q&A or wizard
   confirmedFields: Record<string, string>;   // after user confirmation
   missingRequired: string[];
   currentStep:     string;
   status:          SessionStatus;
+  preferences?:    InsurancePreference[];    // from wizard
+  claimsInfo?:     ClaimsInfo;              // from wizard
   createdAt:       number;
   updatedAt:       number;
 }

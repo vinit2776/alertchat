@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import type { KeyboardEvent, DragEvent } from 'react';
+import InsuranceWizard from './InsuranceWizard';
 
 const autoBase = (import.meta as any).env.VITE_AUTOMATION_URL || 'http://localhost:4001';
 
@@ -31,7 +32,7 @@ const INS_LABELS: Record<InsuranceType, string> = {
 };
 
 export default function PortalChatPage({ token, onLogout, onShowHistory, onShowAdmin, isAdmin }: Props) {
-  const [phase, setPhase]               = useState<'setup' | 'uploading' | 'chat'>('setup');
+  const [phase, setPhase]               = useState<'setup' | 'wizard' | 'quoting' | 'chat'>('setup');
   const [insType, setInsType]           = useState<InsuranceType>('motor');
   const [companies, setCompanies]       = useState<Company[]>([]);
   const [selectedIds, setSelectedIds]   = useState<string[]>([]);
@@ -81,10 +82,9 @@ export default function PortalChatPage({ token, onLogout, onShowHistory, onShowA
       const data = await apiPost('/api/chat/session', { insuranceType: insType, selectedCompanyIds: selectedIds });
       setSessionId(data.sessionId);
       if (insType === 'motor') {
-        // RC upload is mandatory for motor — go to upload screen first.
-        // Store the welcome so we can show it once upload is done.
+        // Motor → wizard flow (documents + claims + preferences + review)
         setPendingWelcome(data.welcome);
-        setPhase('uploading');
+        setPhase('wizard');
       } else {
         setMessages([{ role: 'assistant', text: data.welcome, ts: Date.now() }]);
         setPhase('chat');
@@ -173,6 +173,43 @@ export default function PortalChatPage({ token, onLogout, onShowHistory, onShowA
 
   function handleKey(e: KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+  }
+
+  // Called immediately after wizard completes — no button needed
+  async function runQuotesFromWizard(sid: string, _fields: Record<string, string>) {
+    setQuoteRunning(true); setQuoteResults(null); setCaptchaState(null);
+
+    const sseUrl = `${autoBase}/api/quotes/${sid}/progress?token=${encodeURIComponent(token)}`;
+    const sse = new EventSource(sseUrl);
+    progressRef.current = sse;
+    sse.onmessage = (e) => {
+      try {
+        const event = JSON.parse(e.data) as { type: string; message?: string };
+        if (!event.message) return;
+        setMessages(prev => [...prev, { role: 'assistant' as const, text: event.message!, ts: Date.now() }]);
+      } catch { /* ignore */ }
+    };
+    sse.onerror = () => { sse.close(); progressRef.current = null; };
+
+    try {
+      const res  = await fetch(`${autoBase}/api/quotes/${sid}/start`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.message ?? 'Quote failed');
+      const results: any[] = data.results ?? [];
+      const captchaResult = results.find((r: any) => r.captchaRequired);
+      if (captchaResult) {
+        setCaptchaState({ portalId: captchaResult.portalId, imageBase64: captchaResult.captchaImageBase64, captchaToken: captchaResult.captchaToken ?? '' });
+      }
+      setQuoteResults(results);
+    } catch (err: any) {
+      setQuoteResults([{ success: false, errorMessage: err.message, portalId: 'unknown', portalName: 'Error' }]);
+    } finally {
+      setQuoteRunning(false);
+      sse.close(); progressRef.current = null;
+    }
   }
 
   async function runQuotes() {
@@ -335,50 +372,80 @@ export default function PortalChatPage({ token, onLogout, onShowHistory, onShowA
     );
   }
 
-  // ── Uploading Phase (motor only — RC required before chat) ────────────────
+  // ── Wizard Phase (motor only) ─────────────────────────────────────────────
 
-  if (phase === 'uploading') {
+  if (phase === 'wizard' && sessionId) {
     return (
-      <div style={s.shell}
-        onDragOver={e => { e.preventDefault(); setDragOver(true); }}
-        onDragLeave={() => setDragOver(false)}
-        onDrop={e => { e.preventDefault(); setDragOver(false); const f = e.dataTransfer.files[0]; if (f) uploadFile(f); }}>
+      <InsuranceWizard
+        token={token}
+        sessionId={sessionId}
+        insType={insType}
+        onBack={reset}
+        onComplete={(confirmedFields, missing) => {
+          setConfirmedFields(confirmedFields);
+          setPhase('quoting');
+          // Auto-trigger quotes immediately
+          runQuotesFromWizard(sessionId, confirmedFields);
+        }}
+      />
+    );
+  }
 
-        <Header title="Upload RC" onLogout={onLogout} onReset={reset} onHistory={onShowHistory} onAdmin={onShowAdmin} showAdmin={isAdmin} />
+  // ── Quoting Phase (wizard → automation running) ────────────────────────────
 
-        {dragOver && (
-          <div style={s.dropOverlay}>
-            <div style={s.dropBox}>📄 Drop RC to upload</div>
-          </div>
-        )}
+  if (phase === 'quoting') {
+    return (
+      <div style={s.shell}>
+        <Header title="Getting Quotes" onLogout={onLogout} onReset={reset} onHistory={onShowHistory} onAdmin={onShowAdmin} showAdmin={isAdmin} />
+        <div style={s.feed}>
 
-        <div style={s.uploadScreen}>
-          <div style={s.uploadCard}>
-            <div style={s.uploadIcon}>📄</div>
-            <div style={s.uploadTitle}>Upload Vehicle RC</div>
-            <div style={s.uploadSub}>
-              This is required to auto-fill vehicle details and reduce the number of questions.
-              A clear photo or scan of your Registration Certificate is all you need.
+          {/* Progress steps from SSE */}
+          {messages.map((msg, i) => (
+            <div key={i} style={{ ...s.row, justifyContent: 'flex-start' }}>
+              <div style={s.avatar}>🤖</div>
+              <div style={s.bubbleBot}>{msg.text}</div>
             </div>
+          ))}
 
-            {uploading ? (
-              <div style={s.uploadSpinner}>
-                <TypingDots />
-                <span style={{ marginLeft: 10, color: '#555' }}>Reading RC details…</span>
-              </div>
-            ) : (
-              <>
-                <label htmlFor="rc-upload-main" style={s.uploadZone}>
-                  <span style={{ fontSize: 32 }}>📷</span>
-                  <span style={{ marginTop: 8, fontWeight: 600, color: '#1a5276' }}>Tap to choose RC photo</span>
-                  <span style={{ fontSize: 12, color: '#888', marginTop: 4 }}>JPG, PNG, HEIC or PDF · or drag & drop</span>
-                </label>
-                <input id="rc-upload-main" type="file" accept="image/*,image/heic,application/pdf"
-                  style={{ display: 'none' }}
-                  onChange={e => { const f = e.target.files?.[0]; if (f) uploadFile(f); e.target.value = ''; }} />
-              </>
-            )}
-          </div>
+          {quoteRunning && !messages.some(m => m.text.startsWith('✓') || m.text.startsWith('→')) && (
+            <div style={{ ...s.row, justifyContent: 'flex-start' }}>
+              <div style={s.avatar}>🤖</div>
+              <div style={s.bubbleBot}><TypingDots /> Connecting to portal…</div>
+            </div>
+          )}
+          {quoteRunning && messages.length > 0 && (
+            <div style={{ ...s.row, justifyContent: 'flex-start' }}>
+              <div style={s.avatar}>🤖</div>
+              <div style={s.bubbleBot}><TypingDots /></div>
+            </div>
+          )}
+
+          {/* Results */}
+          {quoteResults && quoteResults.map((r: any, i: number) => (
+            <QuoteResultCard key={i} result={r} />
+          ))}
+
+          {captchaState && (
+            <CaptchaChallenge
+              imageBase64={captchaState.imageBase64}
+              value={captchaInput}
+              onChange={setCaptchaInput}
+              onSubmit={submitCaptcha}
+              loading={quoteRunning}
+            />
+          )}
+
+          {/* Done — offer to start new quote */}
+          {quoteResults && !quoteRunning && (
+            <div style={{ textAlign: 'center', padding: '16px 0' }}>
+              <button style={{ background: '#1a5276', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 24px', cursor: 'pointer', fontSize: 14 }}
+                onClick={reset}>
+                ↺ New Quote
+              </button>
+            </div>
+          )}
+
+          <div ref={bottomRef} />
         </div>
       </div>
     );
