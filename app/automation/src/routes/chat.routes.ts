@@ -1,7 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth } from '../middleware/auth';
 import {
-  createSession, getSession, processMessage, deleteSession, getSessionStats,
+  createSession, ensureSession, processMessage, deleteSession, getSessionStats,
 } from '../ai/conversation';
 import { getEnabledCompanies } from '../portal/registry';
 import { logEvent } from '../audit/logger';
@@ -55,7 +55,7 @@ router.post('/:sessionId/message', requireAuth, async (req: Request, res: Respon
       return;
     }
 
-    const state = getSession(sessionId);
+    const state = await ensureSession(sessionId);
     if (!state) {
       res.status(404).json({ success: false, message: 'Session not found' });
       return;
@@ -79,17 +79,17 @@ router.post('/:sessionId/message', requireAuth, async (req: Request, res: Respon
 });
 
 // GET /api/chat/:sessionId  — get session state
-router.get('/:sessionId', requireAuth, (req: Request, res: Response) => {
-  const state = getSession(req.params.sessionId);
+router.get('/:sessionId', requireAuth, async (req: Request, res: Response) => {
+  const state = await ensureSession(req.params.sessionId);
   if (!state) { res.status(404).json({ success: false, message: 'Session not found' }); return; }
   if (state.userId !== req.user!.sub) { res.status(403).json({ success: false, message: 'Not your session' }); return; }
   res.json({ success: true, session: state });
 });
 
 // DELETE /api/chat/:sessionId  — end session
-router.delete('/:sessionId', requireAuth, (req: Request, res: Response) => {
+router.delete('/:sessionId', requireAuth, async (req: Request, res: Response) => {
   const user  = req.user!;
-  const state = getSession(req.params.sessionId);
+  const state = await ensureSession(req.params.sessionId);
   if (state && state.userId !== user.sub) { res.status(403).json({ success: false, message: 'Not your session' }); return; }
 
   if (state) {

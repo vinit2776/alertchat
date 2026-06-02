@@ -3,13 +3,15 @@ import { EventEmitter } from 'events';
 // ── Progress event types ────────────────────────────────────────────────────
 
 export interface ProgressEvent {
-  type:       'login' | 'step' | 'result' | 'error';
+  type:       'login' | 'step' | 'result' | 'error' | 'quote_complete' | 'all_complete' | 'captcha_required';
   portalId:   string;
   portalName: string;
   message:    string;
   ts:         number;
   /** Only on type=result — headline figures */
   data?:      { premium?: number | null; idv?: number | null };
+  /** Only on type=quote_complete — full quote result for this portal */
+  result?:    Record<string, unknown>;
 }
 
 // ── Per-session EventEmitter store ─────────────────────────────────────────

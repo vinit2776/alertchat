@@ -1,15 +1,16 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { requireAuth } from '../middleware/auth';
-import { getSession } from '../ai/conversation';
+import { ensureSession, persistSession } from '../ai/conversation';
 import { browserPool } from '../session/pool';
-import { runPlaybook, CaptchaRequiredError } from '../portal/playbook-runner';
+import { runPlaybook, runBuyFlow, loadPlaybook, CaptchaRequiredError } from '../portal/playbook-runner';
 import { getEnabledCompanies } from '../portal/registry';
 import { computeMotorFields } from '../portal/field-computer';
 import { logEvent } from '../audit/logger';
 import { query } from '../db/client';
 import { emitProgress, onProgress, offProgress, cleanupProgress } from '../session/progress';
 import type { ProgressEvent } from '../session/progress';
+import { register as registerAction, lookup as lookupAction, update as updateAction, discard as discardAction } from '../session/pending-actions';
 
 const router = Router();
 
@@ -19,7 +20,7 @@ router.post('/:sessionId/start', requireAuth, async (req: Request, res: Response
     const { sessionId } = req.params;
     const user = req.user!;
 
-    const state = getSession(sessionId);
+    const state = await ensureSession(sessionId);
     if (!state) {
       res.status(404).json({ success: false, message: 'Session not found' });
       return;
@@ -58,6 +59,7 @@ router.post('/:sessionId/start', requireAuth, async (req: Request, res: Response
 
     // Mark session as filling before starting async work
     state.status = 'filling';
+    persistSession(sessionId);
 
     const companiesStarted  = targetCompanies.slice(0, canStart);
     const companiesQueued   = targetCompanies.slice(canStart);
@@ -67,10 +69,27 @@ router.post('/:sessionId/start', requireAuth, async (req: Request, res: Response
       console.info(`[Quote] ${companiesQueued.length} companies queued (pool full): ${companiesQueued.map(c => c.id).join(', ')}`);
     }
 
+    // ── Return immediately — quote work continues in background ──────────────
+    // This dodges Cloudflare's ~100s tunnel timeout. Results are delivered
+    // via the already-open SSE stream as each portal completes, plus an
+    // `all_complete` event when everything is done.
+    res.json({
+      success:        true,
+      sessionStatus:  state.status,
+      asyncMode:      true,
+      message:        'Quote generation started — results will stream over the SSE channel',
+      queued:         companiesQueued.map(c => ({ id: c.id, name: c.name })),
+      startedPortals: companiesStarted.map(c => ({ id: c.id, name: c.name })),
+    });
+
+    // ── Background: run all portal jobs, emit per-portal results via SSE ─────
+    // Don't await — let the request return now.
+    (async () => {
     // Run in parallel — one browser context per company
     const jobs = companiesStarted.map(async (company) => {
       const sessionKey = `${sessionId}:${company.id}`;
-      let acquired = false;
+      let acquired       = false;
+      let keptForBuyFlow = false;
 
       try {
         const { slotId, context } = await browserPool.acquire(sessionKey);
@@ -87,43 +106,86 @@ router.post('/:sessionId/start', requireAuth, async (req: Request, res: Response
             ? computeMotorFields(state.confirmedFields)
             : state.confirmedFields;
 
-        return await runPlaybook(
+        // Does this portal support a follow-up buy flow? If so, keep the page alive.
+        const playbook = loadPlaybook(company.id);
+        const keepAlive = !!playbook.buy_flow;
+
+        const result = await runPlaybook(
           company.id, enrichedFields, context,
           sessionId, user.sub, user.email,
           undefined,   // captchaText
           undefined,   // debugMode
           (event) => emitProgress(sessionId, event),  // SSE progress
+          keepAlive,
         );
+
+        // If the quote succeeded AND we can do a buy flow, register the pending
+        // action — keeps the page alive for the next 10 minutes.
+        if (result.success && keepAlive && result.page) {
+          registerAction({
+            sessionId,
+            portalId:   company.id,
+            portalName: playbook.name,
+            sessionKey,
+            page:       result.page,
+          });
+          keptForBuyFlow = true;
+        }
+
+        // Strip the page reference before returning (page is not serialisable)
+        const { page, screenshotBase64, ...clientResult } = result;
+
+        // Emit per-portal quote_complete event so the frontend can render this card NOW
+        emitProgress(sessionId, {
+          type:       'quote_complete',
+          portalId:   company.id,
+          portalName: playbook.name,
+          message:    '',
+          ts:         Date.now(),
+          result:     clientResult,
+        });
+
+        return clientResult;
       } finally {
-        if (acquired) await browserPool.release(sessionKey);
+        // Release the pool slot only if we're NOT holding it for a buy flow
+        if (acquired && !keptForBuyFlow) await browserPool.release(sessionKey);
       }
     });
 
     const settled = await Promise.allSettled(jobs);
-    // All portals done — clean up the per-session EventEmitter
-    cleanupProgress(sessionId);
 
     const results = settled.map((r, i) => {
       if (r.status === 'fulfilled') return r.value;
       const company = companiesStarted[i];
       const err = r.reason;
+      let rejectedResult: any;
       if (err instanceof CaptchaRequiredError) {
-        // Return captcha challenge — client must re-call with captchaText
-        return {
+        rejectedResult = {
           portalId: company.id, portalName: company.name,
           success: false, premium: null, idv: null,
-          screenshotBase64: null, rawData: {},
-          captchaRequired: true,
+          rawData: {},
+          captchaRequired:    true,
           captchaImageBase64: err.captchaImageBase64,
           errorMessage: err.message, durationMs: 0,
         };
+        // Emit captcha_required event so the frontend renders the captcha UI
+        emitProgress(sessionId, {
+          type: 'captcha_required', portalId: company.id, portalName: company.name,
+          message: 'Captcha needs human input', ts: Date.now(), result: rejectedResult,
+        });
+      } else {
+        rejectedResult = {
+          portalId: company.id, portalName: company.name,
+          success: false, premium: null, idv: null,
+          rawData: {},
+          errorMessage: err?.message ?? 'Unknown error', durationMs: 0,
+        };
+        emitProgress(sessionId, {
+          type: 'quote_complete', portalId: company.id, portalName: company.name,
+          message: '', ts: Date.now(), result: rejectedResult,
+        });
       }
-      return {
-        portalId: company.id, portalName: company.name,
-        success: false, premium: null, idv: null,
-        screenshotBase64: null, rawData: {},
-        errorMessage: err?.message ?? 'Unknown error', durationMs: 0,
-      };
+      return rejectedResult;
     });
 
     // Persist to DB (no-op if DATABASE_URL not set)
@@ -150,6 +212,7 @@ router.post('/:sessionId/start', requireAuth, async (req: Request, res: Response
     // Update session status
     const anySuccess = results.some(r => r.success);
     state.status = anySuccess ? 'complete' : 'error';
+    persistSession(sessionId);
 
     logEvent({
       userId: user.sub, userEmail: user.email, sessionId,
@@ -162,15 +225,107 @@ router.post('/:sessionId/start', requireAuth, async (req: Request, res: Response
       },
     });
 
-    // Strip large screenshot from main response
-    const clientResults = results.map(({ screenshotBase64, ...rest }) => rest);
+    // Emit all_complete and clean up the SSE emitter
+    emitProgress(sessionId, {
+      type: 'all_complete', portalId: '', portalName: '',
+      message: `All quotes done — ${results.filter(r => r.success).length}/${results.length} succeeded`,
+      ts: Date.now(),
+    });
+    // Give SSE a beat to flush, then clean up
+    setTimeout(() => cleanupProgress(sessionId), 2000);
+    })().catch(err => {
+      console.error('[Quote] Background job failed:', err);
+      emitProgress(sessionId, {
+        type: 'error', portalId: '', portalName: '',
+        message: `Background error: ${err.message}`, ts: Date.now(),
+      });
+      cleanupProgress(sessionId);
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/quotes/:sessionId/proceed/:portalId  — Click "Proceed to Buy" on the held page
+router.post('/:sessionId/proceed/:portalId', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { sessionId, portalId } = req.params;
+    const user = req.user!;
+
+    const state = await ensureSession(sessionId);
+    if (!state || state.userId !== user.sub) {
+      res.status(403).json({ success: false, message: 'Session not found or not yours' });
+      return;
+    }
+
+    const action = lookupAction(sessionId, portalId);
+    if (!action) {
+      res.status(404).json({
+        success: false,
+        message: 'No pending action for this portal. The quote may have expired (10 min TTL). Please re-run the quote.',
+      });
+      return;
+    }
+
+    logEvent({
+      userId: user.sub, userEmail: user.email, sessionId, portalId,
+      action: 'form_step_filled', outcome: 'pending',
+      meta: { phase: 'buy_flow_start' },
+    });
+
+    const result = await runBuyFlow(
+      portalId, action.page,
+      (event) => emitProgress(sessionId, event),
+    );
+
+    if (result.paymentUrl) {
+      updateAction(sessionId, portalId, {
+        paymentUrl: result.paymentUrl,
+        status:     'payment_pending',
+        quoteRef:   result.confirmationNumber ?? undefined,
+      });
+    }
+
+    logEvent({
+      userId: user.sub, userEmail: user.email, sessionId, portalId,
+      action: result.paymentUrl ? 'form_step_filled' : 'form_step_failed',
+      outcome: result.paymentUrl ? 'success' : 'failure',
+      meta: { phase: 'buy_flow_complete', hasPaymentUrl: !!result.paymentUrl },
+    });
 
     res.json({
-      success:        true,
-      sessionStatus:  state.status,
-      results:        clientResults,
-      queued:         companiesQueued.map(c => ({ id: c.id, name: c.name })),
+      success:            !!result.paymentUrl,
+      paymentUrl:         result.paymentUrl,
+      confirmationNumber: result.confirmationNumber,
+      policyPdfUrl:       result.policyPdfUrl,
+      errorMessage:       result.errorMessage,
+      // Keep screenshot small for client — only sent on failure for debugging
+      ...(result.errorMessage ? { screenshotBase64: result.screenshotBase64 } : {}),
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/quotes/:sessionId/release/:portalId  — Agent abandons buy flow; release the slot
+router.post('/:sessionId/release/:portalId', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { sessionId, portalId } = req.params;
+    const user = req.user!;
+
+    const state = await ensureSession(sessionId);
+    if (!state || state.userId !== user.sub) {
+      res.status(403).json({ success: false, message: 'Not your session' });
+      return;
+    }
+
+    const action = lookupAction(sessionId, portalId);
+    if (action) {
+      try { await action.page.close(); } catch { /* ignore */ }
+      await browserPool.release(action.sessionKey);
+      discardAction(sessionId, portalId);
+    }
+    res.json({ success: true });
   } catch (err) {
     next(err);
   }
@@ -178,7 +333,7 @@ router.post('/:sessionId/start', requireAuth, async (req: Request, res: Response
 
 // GET /api/quotes/:sessionId/progress  — SSE stream of real-time automation steps
 // EventSource cannot set headers, so we accept the JWT as a ?token= query param.
-router.get('/:sessionId/progress', (req: Request, res: Response) => {
+router.get('/:sessionId/progress', async (req: Request, res: Response) => {
   // Manual auth — accept ?token= as fallback for EventSource
   const rawToken = req.query.token as string | undefined
     ?? req.headers.authorization?.replace(/^Bearer\s+/, '');
@@ -199,7 +354,7 @@ router.get('/:sessionId/progress', (req: Request, res: Response) => {
   }
 
   const { sessionId } = req.params;
-  const state = getSession(sessionId);
+  const state = await ensureSession(sessionId);
   if (!state || state.userId !== user.sub) {
     res.status(403).json({ success: false, message: 'Not your session' });
     return;

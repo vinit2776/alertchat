@@ -75,6 +75,32 @@ export interface PortalPlaybook {
     idv_selector?:           string;
     result_page_indicator?:  string;  // wait for this before extracting
     full_page_screenshot:    boolean;
+    // Optional richer fields. Selectors are best-effort — set to null if not present.
+    od_premium_selector?:        string;
+    tp_premium_selector?:        string;
+    gst_selector?:               string;
+    ncb_amount_selector?:        string;
+    addon_zero_dep_selector?:    string;
+    addon_engine_protect_selector?: string;
+    addon_rsa_selector?:         string;
+    addon_pa_selector?:          string;
+    cashless_count_selector?:    string;
+    quote_ref_selector?:         string;
+  };
+  // Optional buy flow — runs after the agent clicks "Get Payment Link" on a quote.
+  // The session's Playwright page stays alive after the quote, so these steps
+  // execute in the same browser context. Final step should capture the payment URL.
+  buy_flow?: {
+    steps:               PlaybookStep[];
+    payment_url_extractor: {
+      strategy: 'current_url' | 'href' | 'text';
+      // For href/text strategies, the selector to read from
+      selector?: string;
+      // Regex to extract the URL from the captured value (optional)
+      url_regex?: string;
+    };
+    confirmation_number_selector?: string;
+    policy_pdf_link_selector?:     string;
   };
 }
 
@@ -88,6 +114,19 @@ export interface QuoteRunResult {
   rawData:          Record<string, string>;
   errorMessage:     string | null;
   durationMs:       number;
+  // Expanded breakdown (any of these may be null if the portal doesn't show them)
+  odPremium?:       number | null;
+  tpPremium?:       number | null;
+  gstAmount?:       number | null;
+  ncbAmount?:       number | null;
+  addonZeroDep?:    number | null;
+  addonEngine?:     number | null;
+  addonRsa?:        number | null;
+  addonPa?:         number | null;
+  cashlessCount?:   number | null;
+  quoteRef?:        string | null;
+  // True if the playbook has a buy_flow — the frontend should show "Get Payment Link"
+  supportsProceed?: boolean;
 }
 
 // ── Playbook loader ────────────────────────────────────────────────────────
@@ -168,7 +207,11 @@ export async function runPlaybook(
   captchaText?:    string,   // human-provided captcha (skip AI if set)
   debugMode?:      boolean,  // if true: save per-step screenshots + log select options
   onProgress?:     (event: ProgressEvent) => void,  // real-time step callback for SSE
-): Promise<QuoteRunResult & { debugSteps?: Array<{ stepId: string; screenshotBase64: string; formHtml?: string }> }> {
+  keepAlive?:      boolean,  // if true: do NOT close the page on completion (caller keeps it)
+): Promise<QuoteRunResult & {
+  debugSteps?: Array<{ stepId: string; screenshotBase64: string; formHtml?: string }>;
+  page?:        Page;   // returned only if keepAlive — caller is responsible for closing
+}> {
   const start      = Date.now();
   const playbook   = loadPlaybook(portalId);
   let   page: Page | null = null;
@@ -499,23 +542,37 @@ export async function runPlaybook(
     let premium: number | null = null;
     let idv:     number | null = null;
 
-    if (qr.premium_selector) {
-      const text = await page.locator(qr.premium_selector).first().textContent().catch(() => null);
-      if (text) {
-        rawData.premium_text = text.trim();
-        const num = parseFloat(text.replace(/[^\d.]/g, ''));
-        if (!isNaN(num)) premium = num;
-      }
+    // Helper to read a selector and extract a numeric value
+    async function extractAmount(selector?: string, label?: string): Promise<number | null> {
+      if (!selector) return null;
+      const text = await page!.locator(selector).first().textContent().catch(() => null);
+      if (!text) return null;
+      if (label) rawData[`${label}_text`] = text.trim();
+      const num = parseFloat(text.replace(/[^\d.]/g, ''));
+      return isNaN(num) ? null : num;
     }
 
-    if (qr.idv_selector) {
-      const text = await page.locator(qr.idv_selector).first().textContent().catch(() => null);
-      if (text) {
-        rawData.idv_text = text.trim();
-        const num = parseFloat(text.replace(/[^\d.]/g, ''));
-        if (!isNaN(num)) idv = num;
-      }
+    async function extractString(selector?: string, label?: string): Promise<string | null> {
+      if (!selector) return null;
+      const text = await page!.locator(selector).first().textContent().catch(() => null);
+      if (!text) return null;
+      const val = text.trim();
+      if (label) rawData[label] = val;
+      return val;
     }
+
+    premium                  = await extractAmount(qr.premium_selector,            'premium');
+    idv                      = await extractAmount(qr.idv_selector,                'idv');
+    const odPremium          = await extractAmount(qr.od_premium_selector,         'od_premium');
+    const tpPremium          = await extractAmount(qr.tp_premium_selector,         'tp_premium');
+    const gstAmount          = await extractAmount(qr.gst_selector,                'gst');
+    const ncbAmount          = await extractAmount(qr.ncb_amount_selector,         'ncb_amount');
+    const addonZeroDep       = await extractAmount(qr.addon_zero_dep_selector,     'addon_zero_dep');
+    const addonEngine        = await extractAmount(qr.addon_engine_protect_selector, 'addon_engine_protect');
+    const addonRsa           = await extractAmount(qr.addon_rsa_selector,          'addon_rsa');
+    const addonPa            = await extractAmount(qr.addon_pa_selector,           'addon_pa');
+    const cashlessCount      = await extractAmount(qr.cashless_count_selector,     'cashless_count');
+    const quoteRef           = await extractString(qr.quote_ref_selector,          'quote_ref');
 
     let screenshotBase64: string | null = null;
     if (qr.full_page_screenshot) {
@@ -545,7 +602,12 @@ export async function runPlaybook(
       portalId, portalName: playbook.name,
       success: true, premium, idv, screenshotBase64, rawData,
       errorMessage: null, durationMs,
+      odPremium, tpPremium, gstAmount, ncbAmount,
+      addonZeroDep, addonEngine, addonRsa, addonPa,
+      cashlessCount, quoteRef,
+      supportsProceed: !!playbook.buy_flow,
       ...(debugMode && { debugSteps }),
+      ...(keepAlive  && { page: page! }),   // caller keeps the page open
     };
 
   } catch (err: any) {
@@ -583,8 +645,133 @@ export async function runPlaybook(
     };
 
   } finally {
-    if (page) {
+    // Only close the page if NOT keeping it alive. If keepAlive, the caller
+    // (typically a pendingAction holder) owns the page and must close it later.
+    if (page && !keepAlive) {
       try { await page.close(); } catch { /* ignore */ }
     }
+  }
+}
+
+// ── Buy flow runner ─────────────────────────────────────────────────────────
+
+export interface BuyFlowResult {
+  paymentUrl:          string | null;
+  confirmationNumber:  string | null;
+  policyPdfUrl:        string | null;
+  errorMessage:        string | null;
+  screenshotBase64:    string | null;
+}
+
+/**
+ * Run the playbook's buy_flow steps on an existing page (post-quote).
+ * Captures the payment URL using the configured extractor strategy.
+ *
+ * Caller is responsible for closing the page after this returns.
+ */
+export async function runBuyFlow(
+  portalId: string,
+  page:     Page,
+  onProgress?: (event: ProgressEvent) => void,
+): Promise<BuyFlowResult> {
+  const playbook = loadPlaybook(portalId);
+
+  if (!playbook.buy_flow) {
+    return {
+      paymentUrl: null, confirmationNumber: null, policyPdfUrl: null,
+      errorMessage: `Portal "${portalId}" doesn't support the buy flow yet.`,
+      screenshotBase64: null,
+    };
+  }
+
+  const { steps, payment_url_extractor, confirmation_number_selector, policy_pdf_link_selector } =
+    playbook.buy_flow;
+
+  try {
+    onProgress?.({
+      type: 'step', portalId, portalName: playbook.name,
+      message: `→ Generating payment link…`,
+      ts: Date.now(),
+    });
+
+    // Execute each buy_flow step (mirror of quote_flow execution)
+    for (const step of steps) {
+      if (step.delay_ms) await page.waitForTimeout(step.delay_ms);
+
+      if (step.next_trigger) {
+        if (step.next_trigger.action === 'click') {
+          await page.click(step.next_trigger.selector);
+        } else {
+          await page.locator(step.next_trigger.selector).evaluate(el => (el as any).submit?.());
+        }
+      }
+
+      if (step.wait_after) {
+        await page.waitForSelector(step.wait_after, { timeout: 30_000 });
+      } else {
+        await page.waitForLoadState('networkidle');
+      }
+    }
+
+    // Extract payment URL
+    let paymentUrl: string | null = null;
+    switch (payment_url_extractor.strategy) {
+      case 'current_url':
+        paymentUrl = page.url();
+        break;
+      case 'href':
+        if (payment_url_extractor.selector) {
+          paymentUrl = await page.locator(payment_url_extractor.selector).first().getAttribute('href');
+        }
+        break;
+      case 'text':
+        if (payment_url_extractor.selector) {
+          paymentUrl = await page.locator(payment_url_extractor.selector).first().textContent();
+          paymentUrl = paymentUrl?.trim() ?? null;
+        }
+        break;
+    }
+
+    // Apply optional regex
+    if (paymentUrl && payment_url_extractor.url_regex) {
+      const m = paymentUrl.match(new RegExp(payment_url_extractor.url_regex));
+      paymentUrl = m?.[1] ?? m?.[0] ?? paymentUrl;
+    }
+
+    let confirmationNumber: string | null = null;
+    if (confirmation_number_selector) {
+      confirmationNumber = await page.locator(confirmation_number_selector).first().textContent().catch(() => null);
+      confirmationNumber = confirmationNumber?.trim() ?? null;
+    }
+
+    let policyPdfUrl: string | null = null;
+    if (policy_pdf_link_selector) {
+      policyPdfUrl = await page.locator(policy_pdf_link_selector).first().getAttribute('href').catch(() => null);
+    }
+
+    const screenshot = await page.screenshot({ fullPage: false }).catch(() => null);
+
+    onProgress?.({
+      type: 'result', portalId, portalName: playbook.name,
+      message: paymentUrl ? `✅ Payment link ready` : `⚠️ Couldn't capture payment link`,
+      ts: Date.now(),
+    });
+
+    return {
+      paymentUrl,
+      confirmationNumber,
+      policyPdfUrl,
+      errorMessage: null,
+      screenshotBase64: screenshot?.toString('base64') ?? null,
+    };
+  } catch (err: any) {
+    const screenshot = await page.screenshot({ fullPage: false }).catch(() => null);
+    return {
+      paymentUrl: null,
+      confirmationNumber: null,
+      policyPdfUrl: null,
+      errorMessage: err.message,
+      screenshotBase64: screenshot?.toString('base64') ?? null,
+    };
   }
 }

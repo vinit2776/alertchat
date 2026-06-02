@@ -37,7 +37,7 @@ export default function PortalChatPage({ token, onLogout, onShowHistory, onShowA
   const [companies, setCompanies]       = useState<Company[]>([]);
   const [selectedIds, setSelectedIds]   = useState<string[]>([]);
   const [sessionId, setSessionId]       = useState<string | null>(null);
-  const [pendingWelcome, setPendingWelcome] = useState<string>('');
+  const [, setPendingWelcome] = useState<string>('');
   const [messages, setMessages]         = useState<Message[]>([]);
   const [input, setInput]               = useState('');
   const [loading, setLoading]           = useState(false);
@@ -48,6 +48,13 @@ export default function PortalChatPage({ token, onLogout, onShowHistory, onShowA
   const [quoteResults, setQuoteResults]         = useState<any[] | null>(null);
   const [captchaState, setCaptchaState]         = useState<{ portalId: string; imageBase64: string; captchaToken: string } | null>(null);
   const [captchaInput, setCaptchaInput]         = useState('');
+  // Per-portal payment-link state, keyed by portalId
+  const [paymentByPortal, setPaymentByPortal]   = useState<Record<string, {
+    status: 'idle' | 'loading' | 'done' | 'error';
+    paymentUrl?: string;
+    confirmationNumber?: string;
+    errorMessage?: string;
+  }>>({});
   const bottomRef     = useRef<HTMLDivElement>(null);
   const fileRef       = useRef<HTMLInputElement>(null);
   const progressRef   = useRef<EventSource | null>(null);
@@ -118,11 +125,7 @@ export default function PortalChatPage({ token, onLogout, onShowHistory, onShowA
   const uploadFile = useCallback(async (file: File) => {
     if (!sessionId) return;
     setUploading(true);
-
-    // In the uploading phase we haven't entered chat yet — show nothing in messages yet
-    if (phase !== 'uploading') {
-      setMessages(prev => [...prev, { role: 'system', text: `Uploading ${file.name}…`, ts: Date.now() }]);
-    }
+    setMessages(prev => [...prev, { role: 'system', text: `Uploading ${file.name}…`, ts: Date.now() }]);
 
     try {
       const form = new FormData();
@@ -133,37 +136,20 @@ export default function PortalChatPage({ token, onLogout, onShowHistory, onShowA
       const data = await res.json();
       if (!data.success) throw new Error(data.message);
 
-      // Prompt Claude to continue after OCR
       const follow = await apiPost(`/api/chat/${sessionId}/message`, {
         message: `I uploaded the ${data.docType}. What else do you need?`,
       });
 
-      if (phase === 'uploading') {
-        // First RC upload — transition to chat with all messages in order:
-        // 1. Advisor welcome  2. OCR summary  3. Claude's first question
-        setMessages([
-          { role: 'assistant', text: pendingWelcome,  ts: Date.now() - 2 },
-          { role: 'assistant', text: data.message,    ts: Date.now() - 1 },
-          { role: 'assistant', text: follow.message,  ts: Date.now() },
-        ]);
-        setPhase('chat');
-      } else {
-        setMessages(prev => [...prev,
-          { role: 'assistant', text: data.message,   ts: Date.now() },
-          { role: 'assistant', text: follow.message, ts: Date.now() + 1 },
-        ]);
-      }
+      setMessages(prev => [...prev,
+        { role: 'assistant', text: data.message,   ts: Date.now() },
+        { role: 'assistant', text: follow.message, ts: Date.now() + 1 },
+      ]);
     } catch (err: any) {
-      if (phase === 'uploading') {
-        // Stay on upload screen but show the error
-        alert(`Upload failed: ${err.message}`);
-      } else {
-        setMessages(prev => [...prev, { role: 'system', text: `Upload failed: ${err.message}`, ts: Date.now() }]);
-      }
+      setMessages(prev => [...prev, { role: 'system', text: `Upload failed: ${err.message}`, ts: Date.now() }]);
     } finally {
       setUploading(false);
     }
-  }, [sessionId, token, phase, pendingWelcome]);
+  }, [sessionId, token]);
 
   function handleFileDrop(e: DragEvent<HTMLDivElement>) {
     e.preventDefault(); setDragOver(false);
@@ -175,39 +161,67 @@ export default function PortalChatPage({ token, onLogout, onShowHistory, onShowA
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
   }
 
-  // Called immediately after wizard completes — no button needed
+  // Called immediately after wizard completes — async, SSE-driven.
+  // Quote work runs in the BACKGROUND on the server (avoids Cloudflare's
+  // 100s HTTP timeout on the POST). Results stream over SSE.
   async function runQuotesFromWizard(sid: string, _fields: Record<string, string>) {
-    setQuoteRunning(true); setQuoteResults(null); setCaptchaState(null);
+    setQuoteRunning(true); setQuoteResults([]); setCaptchaState(null);
 
     const sseUrl = `${autoBase}/api/quotes/${sid}/progress?token=${encodeURIComponent(token)}`;
     const sse = new EventSource(sseUrl);
     progressRef.current = sse;
+
     sse.onmessage = (e) => {
       try {
-        const event = JSON.parse(e.data) as { type: string; message?: string };
-        if (!event.message) return;
-        setMessages(prev => [...prev, { role: 'assistant' as const, text: event.message!, ts: Date.now() }]);
+        const event = JSON.parse(e.data) as {
+          type: string; message?: string;
+          portalId?: string; portalName?: string;
+          result?: any;
+        };
+        // Step-by-step status (login, step, error) → chat bubble
+        if (event.message && event.type !== 'quote_complete' && event.type !== 'all_complete' && event.type !== 'captcha_required') {
+          setMessages(prev => [...prev, { role: 'assistant' as const, text: event.message!, ts: Date.now() }]);
+        }
+        // Per-portal completion → append the quote card
+        if (event.type === 'quote_complete' && event.result) {
+          setQuoteResults(prev => [...(prev ?? []), event.result]);
+        }
+        // Captcha challenge for this portal
+        if (event.type === 'captcha_required' && event.result) {
+          setCaptchaState({
+            portalId:        event.result.portalId,
+            imageBase64:     event.result.captchaImageBase64,
+            captchaToken:    event.result.captchaToken ?? '',
+          });
+          setQuoteResults(prev => [...(prev ?? []), event.result]);
+        }
+        // All portals done — close the stream
+        if (event.type === 'all_complete') {
+          setQuoteRunning(false);
+          sse.close(); progressRef.current = null;
+        }
       } catch { /* ignore */ }
     };
-    sse.onerror = () => { sse.close(); progressRef.current = null; };
 
+    sse.onerror = () => {
+      // SSE may temporarily drop — only close if user navigated away
+      // (the natural retry behaviour of EventSource handles transient errors)
+    };
+
+    // Fire the POST to kick off background work. It returns within ~100ms.
     try {
       const res  = await fetch(`${autoBase}/api/quotes/${sid}/start`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       });
       const data = await res.json();
-      if (!data.success) throw new Error(data.message ?? 'Quote failed');
-      const results: any[] = data.results ?? [];
-      const captchaResult = results.find((r: any) => r.captchaRequired);
-      if (captchaResult) {
-        setCaptchaState({ portalId: captchaResult.portalId, imageBase64: captchaResult.captchaImageBase64, captchaToken: captchaResult.captchaToken ?? '' });
+      if (!data.success) {
+        throw new Error(data.message ?? 'Quote could not be started');
       }
-      setQuoteResults(results);
+      // POST succeeded — work is now running in background. Results stream over SSE.
     } catch (err: any) {
-      setQuoteResults([{ success: false, errorMessage: err.message, portalId: 'unknown', portalName: 'Error' }]);
-    } finally {
       setQuoteRunning(false);
+      setQuoteResults([{ success: false, errorMessage: err.message, portalId: 'unknown', portalName: 'Error' }]);
       sse.close(); progressRef.current = null;
     }
   }
@@ -215,27 +229,42 @@ export default function PortalChatPage({ token, onLogout, onShowHistory, onShowA
   async function runQuotes() {
     if (!sessionId || quoteRunning) return;
     setQuoteRunning(true);
-    setQuoteResults(null);
+    setQuoteResults([]);
     setCaptchaState(null);
 
-    // ── Open SSE progress stream BEFORE the POST so we catch every event ──
     const sseUrl = `${autoBase}/api/quotes/${sessionId}/progress?token=${encodeURIComponent(token)}`;
     const sse = new EventSource(sseUrl);
     progressRef.current = sse;
 
     sse.onmessage = (e) => {
       try {
-        const event = JSON.parse(e.data) as { type: string; message?: string; portalName?: string };
-        if (!event.message) return;  // ignore 'connected' and 'ping'
-        setMessages(prev => [...prev, {
-          role:  'assistant' as const,
-          text:  event.message!,
-          ts:    Date.now(),
-        }]);
+        const event = JSON.parse(e.data) as {
+          type: string; message?: string;
+          portalId?: string; portalName?: string;
+          result?: any;
+        };
+        if (event.message && event.type !== 'quote_complete' && event.type !== 'all_complete' && event.type !== 'captcha_required') {
+          setMessages(prev => [...prev, { role: 'assistant' as const, text: event.message!, ts: Date.now() }]);
+        }
+        if (event.type === 'quote_complete' && event.result) {
+          setQuoteResults(prev => [...(prev ?? []), event.result]);
+        }
+        if (event.type === 'captcha_required' && event.result) {
+          setCaptchaState({
+            portalId:        event.result.portalId,
+            imageBase64:     event.result.captchaImageBase64,
+            captchaToken:    event.result.captchaToken ?? '',
+          });
+          setQuoteResults(prev => [...(prev ?? []), event.result]);
+        }
+        if (event.type === 'all_complete') {
+          setQuoteRunning(false);
+          sse.close(); progressRef.current = null;
+        }
       } catch { /* ignore parse errors */ }
     };
 
-    sse.onerror = () => { sse.close(); progressRef.current = null; };
+    sse.onerror = () => { /* EventSource auto-retries */ };
 
     try {
       const res  = await fetch(`${autoBase}/api/quotes/${sessionId}/start`, {
@@ -244,24 +273,38 @@ export default function PortalChatPage({ token, onLogout, onShowHistory, onShowA
       });
       const data = await res.json();
       if (!data.success) throw new Error(data.message ?? 'Quote request failed');
-      const results: any[] = data.results ?? [];
-      // Check if any result requires captcha
-      const captchaResult = results.find((r: any) => r.captchaRequired);
-      if (captchaResult) {
-        setCaptchaState({
-          portalId:        captchaResult.portalId,
-          imageBase64:     captchaResult.captchaImageBase64,
-          captchaToken:    captchaResult.captchaToken ?? '',
-        });
-      }
-      setQuoteResults(results);
+      // Results stream via SSE — nothing to do here
     } catch (err: any) {
-      setQuoteResults([{ success: false, errorMessage: err.message, portalId: 'unknown', portalName: 'Error' }]);
-    } finally {
       setQuoteRunning(false);
-      // POST completed — close the SSE stream
+      setQuoteResults([{ success: false, errorMessage: err.message, portalId: 'unknown', portalName: 'Error' }]);
       sse.close();
       progressRef.current = null;
+    }
+  }
+
+  async function proceedBuy(portalId: string) {
+    if (!sessionId) return;
+    setPaymentByPortal(p => ({ ...p, [portalId]: { status: 'loading' } }));
+    try {
+      const res  = await fetch(`${autoBase}/api/quotes/${sessionId}/proceed/${portalId}`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      });
+      const data = await res.json();
+      if (data.success && data.paymentUrl) {
+        setPaymentByPortal(p => ({ ...p, [portalId]: {
+          status: 'done',
+          paymentUrl: data.paymentUrl,
+          confirmationNumber: data.confirmationNumber ?? undefined,
+        }}));
+      } else {
+        setPaymentByPortal(p => ({ ...p, [portalId]: {
+          status: 'error',
+          errorMessage: data.errorMessage ?? data.message ?? 'Could not generate payment link',
+        }}));
+      }
+    } catch (err: any) {
+      setPaymentByPortal(p => ({ ...p, [portalId]: { status: 'error', errorMessage: err.message } }));
     }
   }
 
@@ -381,7 +424,7 @@ export default function PortalChatPage({ token, onLogout, onShowHistory, onShowA
         sessionId={sessionId}
         insType={insType}
         onBack={reset}
-        onComplete={(confirmedFields, missing) => {
+        onComplete={(confirmedFields, _missing) => {
           setConfirmedFields(confirmedFields);
           setPhase('quoting');
           // Auto-trigger quotes immediately
@@ -422,7 +465,7 @@ export default function PortalChatPage({ token, onLogout, onShowHistory, onShowA
 
           {/* Results */}
           {quoteResults && quoteResults.map((r: any, i: number) => (
-            <QuoteResultCard key={i} result={r} />
+            <QuoteResultCard key={i} result={r} onProceed={proceedBuy} paymentState={paymentByPortal[r.portalId]} />
           ))}
 
           {captchaState && (
@@ -501,7 +544,7 @@ export default function PortalChatPage({ token, onLogout, onShowHistory, onShowA
           </div>
         )}
         {quoteResults && quoteResults.map((r: any, i: number) => (
-          <QuoteResultCard key={i} result={r} />
+          <QuoteResultCard key={i} result={r} onProceed={proceedBuy} paymentState={paymentByPortal[r.portalId]} />
         ))}
         {captchaState && (
           <CaptchaChallenge
@@ -596,8 +639,15 @@ function ConfirmationCard({ fields, onRunQuotes, running, done }: {
   );
 }
 
-function QuoteResultCard({ result }: { result: any }) {
+function QuoteResultCard({ result, onProceed, paymentState }: {
+  result:        any;
+  onProceed?:    (portalId: string) => void;
+  paymentState?: { status: 'idle' | 'loading' | 'done' | 'error'; paymentUrl?: string; confirmationNumber?: string; errorMessage?: string };
+}) {
   const success = result.success;
+  const ps = paymentState ?? { status: 'idle' as const };
+  const rupee = (n: any) => `₹${Number(n).toLocaleString('en-IN')}`;
+
   return (
     <div style={qr.card}>
       <div style={{ ...qr.header, background: success ? '#15803d' : '#dc2626' }}>
@@ -609,19 +659,82 @@ function QuoteResultCard({ result }: { result: any }) {
           <>
             {result.premium != null && (
               <div style={qr.highlight}>
-                <span style={qr.label}>Premium</span>
-                <span style={qr.bigValue}>₹{Number(result.premium).toLocaleString('en-IN')}</span>
+                <span style={qr.label}>Net Premium</span>
+                <span style={qr.bigValue}>{rupee(result.premium)}</span>
               </div>
             )}
             {result.idv != null && (
               <div style={qr.row}>
                 <span style={qr.label}>IDV</span>
-                <span style={qr.value}>₹{Number(result.idv).toLocaleString('en-IN')}</span>
+                <span style={qr.value}>{rupee(result.idv)}</span>
               </div>
             )}
+
+            {/* Premium breakdown — only renders rows that have data */}
+            {(result.odPremium != null || result.tpPremium != null || result.gstAmount != null) && (
+              <div style={qr.section}>
+                <div style={qr.sectionTitle}>Premium Breakdown</div>
+                {result.odPremium != null && (
+                  <div style={qr.row}><span style={qr.label}>Own Damage (OD)</span><span style={qr.value}>{rupee(result.odPremium)}</span></div>
+                )}
+                {result.tpPremium != null && (
+                  <div style={qr.row}><span style={qr.label}>Third Party (TP)</span><span style={qr.value}>{rupee(result.tpPremium)}</span></div>
+                )}
+                {result.ncbAmount != null && (
+                  <div style={qr.row}><span style={qr.label}>NCB Discount</span><span style={{ ...qr.value, color: '#16a34a' }}>− {rupee(result.ncbAmount)}</span></div>
+                )}
+                {result.gstAmount != null && (
+                  <div style={qr.row}><span style={qr.label}>GST</span><span style={qr.value}>{rupee(result.gstAmount)}</span></div>
+                )}
+              </div>
+            )}
+
+            {/* Add-ons — only renders rows that have data */}
+            {(result.addonZeroDep != null || result.addonEngine != null || result.addonRsa != null || result.addonPa != null) && (
+              <div style={qr.section}>
+                <div style={qr.sectionTitle}>Add-ons</div>
+                {result.addonZeroDep != null && (
+                  <div style={qr.row}><span style={qr.label}>🛡️ Zero Depreciation</span><span style={qr.value}>{rupee(result.addonZeroDep)}</span></div>
+                )}
+                {result.addonEngine != null && (
+                  <div style={qr.row}><span style={qr.label}>⚙️ Engine Protect</span><span style={qr.value}>{rupee(result.addonEngine)}</span></div>
+                )}
+                {result.addonRsa != null && (
+                  <div style={qr.row}><span style={qr.label}>🚗 Roadside Assistance</span><span style={qr.value}>{rupee(result.addonRsa)}</span></div>
+                )}
+                {result.addonPa != null && (
+                  <div style={qr.row}><span style={qr.label}>🏥 Personal Accident</span><span style={qr.value}>{rupee(result.addonPa)}</span></div>
+                )}
+              </div>
+            )}
+
+            {/* Cashless + quote ref */}
+            {(result.cashlessCount != null || result.quoteRef) && (
+              <div style={qr.metaRow}>
+                {result.cashlessCount != null && <span style={qr.metaBadge}>🔑 {result.cashlessCount} cashless garages</span>}
+                {result.quoteRef && <span style={qr.metaBadge}>Quote #{result.quoteRef}</span>}
+              </div>
+            )}
+
+            {/* Proceed to Buy */}
+            {result.supportsProceed && ps.status === 'idle' && onProceed && (
+              <button style={qr.proceedBtn} onClick={() => onProceed(result.portalId)}>
+                💳 Get Payment Link
+              </button>
+            )}
+            {ps.status === 'loading' && (
+              <div style={qr.proceedLoading}><TypingDots /><span style={{ marginLeft: 10 }}>Generating payment link…</span></div>
+            )}
+            {ps.status === 'done' && ps.paymentUrl && (
+              <PaymentLinkCard paymentUrl={ps.paymentUrl} confirmationNumber={ps.confirmationNumber} portalName={result.portalName ?? result.portalId} />
+            )}
+            {ps.status === 'error' && (
+              <div style={qr.proceedError}>⚠️ {ps.errorMessage ?? 'Could not generate payment link'}</div>
+            )}
+
             {result.rawData && Object.keys(result.rawData).length > 0 && (
               <details style={{ marginTop: 8 }}>
-                <summary style={{ fontSize: 12, color: '#666', cursor: 'pointer' }}>Full details</summary>
+                <summary style={{ fontSize: 12, color: '#666', cursor: 'pointer' }}>Raw extracted text</summary>
                 <pre style={{ fontSize: 11, marginTop: 4, color: '#555', whiteSpace: 'pre-wrap' }}>
                   {JSON.stringify(result.rawData, null, 2)}
                 </pre>
@@ -631,6 +744,56 @@ function QuoteResultCard({ result }: { result: any }) {
         ) : (
           <div style={qr.error}>{result.errorMessage ?? 'Quote generation failed'}</div>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ── Payment Link Card ──────────────────────────────────────────────────────
+
+function PaymentLinkCard({ paymentUrl, confirmationNumber, portalName }: {
+  paymentUrl:          string;
+  confirmationNumber?: string;
+  portalName:          string;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  const message = `Hi! Your motor insurance renewal quote from ${portalName} is ready.\n\n${confirmationNumber ? `Reference: ${confirmationNumber}\n` : ''}Please complete payment using this secure link:\n${paymentUrl}\n\n— Alert Insurance`;
+  const waUrl    = `https://wa.me/?text=${encodeURIComponent(message)}`;
+  const mailUrl  = `mailto:?subject=${encodeURIComponent('Your insurance renewal payment link')}&body=${encodeURIComponent(message)}`;
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(paymentUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch { /* ignore */ }
+  }
+
+  return (
+    <div style={pl.card}>
+      <div style={pl.title}>💳 Payment Link Ready</div>
+      <div style={pl.hint}>Share this link with the customer to complete payment</div>
+
+      {confirmationNumber && (
+        <div style={pl.refBox}>
+          <span style={pl.refLabel}>Reference</span>
+          <span style={pl.refValue}>{confirmationNumber}</span>
+        </div>
+      )}
+
+      <div style={pl.urlBox}>
+        <input style={pl.urlInput} value={paymentUrl} readOnly onClick={e => (e.target as HTMLInputElement).select()} />
+        <button style={pl.copyBtn} onClick={copy}>{copied ? '✓ Copied' : '📋 Copy'}</button>
+      </div>
+
+      <div style={pl.actions}>
+        <a href={waUrl} target="_blank" rel="noopener noreferrer" style={{ ...pl.shareBtn, background: '#25D366' }}>💬 WhatsApp</a>
+        <a href={mailUrl} style={{ ...pl.shareBtn, background: '#3b82f6' }}>📧 Email</a>
+      </div>
+
+      <div style={pl.footer}>
+        Payment link valid for the customer to use. Policy PDF will be emailed to them by {portalName} after successful payment.
       </div>
     </div>
   );
@@ -742,6 +905,28 @@ const qr: Record<string, React.CSSProperties> = {
   bigValue:  { color: '#1a5276', fontSize: 22, fontWeight: 700 },
   value:     { color: '#1a5276', fontSize: 13, fontWeight: 600 },
   error:     { color: '#dc2626', fontSize: 13 },
+  section:      { marginTop: 12, padding: '8px 10px', background: '#f8fafc', borderRadius: 8 },
+  sectionTitle: { fontSize: 11, fontWeight: 700, color: '#475569', textTransform: 'uppercase' as const, letterSpacing: 0.5, marginBottom: 4 },
+  metaRow:      { display: 'flex', gap: 6, flexWrap: 'wrap' as const, marginTop: 10 },
+  metaBadge:    { background: '#f1f5f9', color: '#475569', borderRadius: 20, padding: '3px 10px', fontSize: 11, fontWeight: 500 },
+  proceedBtn:   { display: 'block', width: '100%', marginTop: 14, padding: '12px', background: '#16a34a', color: '#fff', border: 'none', borderRadius: 8, fontSize: 15, fontWeight: 700, cursor: 'pointer' },
+  proceedLoading: { display: 'flex', alignItems: 'center', justifyContent: 'center', marginTop: 14, padding: '10px', background: '#f0fdf4', borderRadius: 8, fontSize: 13, color: '#16a34a' },
+  proceedError:   { marginTop: 14, padding: '10px 12px', background: '#fef2f2', color: '#dc2626', borderRadius: 8, fontSize: 13 },
+};
+
+const pl: Record<string, React.CSSProperties> = {
+  card:     { marginTop: 14, background: '#f0f9ff', border: '1.5px solid #38bdf8', borderRadius: 10, padding: '14px' },
+  title:    { fontSize: 14, fontWeight: 700, color: '#0c4a6e', marginBottom: 2 },
+  hint:     { fontSize: 12, color: '#0369a1', marginBottom: 12 },
+  refBox:   { display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#fff', borderRadius: 6, padding: '8px 12px', marginBottom: 8 },
+  refLabel: { fontSize: 12, color: '#64748b' },
+  refValue: { fontSize: 13, fontWeight: 700, color: '#0c4a6e', fontFamily: 'monospace' },
+  urlBox:   { display: 'flex', gap: 6, marginBottom: 10 },
+  urlInput: { flex: 1, padding: '8px 10px', border: '1px solid #cbd5e1', borderRadius: 6, fontSize: 12, fontFamily: 'monospace', color: '#0c4a6e', background: '#fff' },
+  copyBtn:  { padding: '8px 14px', background: '#1a5276', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap' as const },
+  actions:  { display: 'flex', gap: 8, marginBottom: 10 },
+  shareBtn: { flex: 1, textAlign: 'center' as const, padding: '10px', color: '#fff', borderRadius: 8, fontSize: 14, fontWeight: 600, textDecoration: 'none' },
+  footer:   { fontSize: 11, color: '#475569', textAlign: 'center' as const, lineHeight: 1.4 },
 };
 
 const cap: Record<string, React.CSSProperties> = {

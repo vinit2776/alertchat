@@ -3,15 +3,15 @@ import { v4 as uuidv4 } from 'uuid';
 import { config } from '../config/env';
 import { SessionState, InsuranceType, ExtractedDocument, AuditEvent } from '../types';
 import { logEvent } from '../audit/logger';
+import {
+  loadEntry, getCached, saveEntry, deleteEntry, cacheSize,
+} from '../session/session-store';
 
 let _client: Anthropic | null = null;
 function getClient(): Anthropic {
   if (!_client) _client = new Anthropic({ apiKey: config.anthropicApiKey });
   return _client;
 }
-
-// In-memory session store (Phase 1 — replaced with Redis in Phase 2)
-const sessions = new Map<string, { state: SessionState; history: Anthropic.MessageParam[] }>();
 
 // Required fields per insurance type
 const REQUIRED_FIELDS: Record<InsuranceType, string[]> = {
@@ -96,7 +96,7 @@ export function createSession(
     updatedAt:        Date.now(),
   };
 
-  sessions.set(sessionId, { state, history: [] });
+  saveEntry({ state, history: [] });
 
   logEvent({
     userId, userEmail, sessionId,
@@ -109,17 +109,33 @@ export function createSession(
   return state;
 }
 
+/** Synchronous getter — only sees cached sessions. For full lookup use ensureSession. */
 export function getSession(sessionId: string): SessionState | null {
-  return sessions.get(sessionId)?.state ?? null;
+  return getCached(sessionId)?.state ?? null;
 }
 
-export function applyOcrResult(
+/**
+ * Full session lookup: checks cache, falls back to DB.
+ * Use this in async route handlers — it survives backend restarts.
+ */
+export async function ensureSession(sessionId: string): Promise<SessionState | null> {
+  const entry = await loadEntry(sessionId);
+  return entry?.state ?? null;
+}
+
+/** Persist current state — call after any mutation to a session. */
+export function persistSession(sessionId: string): void {
+  const entry = getCached(sessionId);
+  if (entry) saveEntry(entry);
+}
+
+export async function applyOcrResult(
   sessionId: string,
   userId: string,
   userEmail: string,
   doc: ExtractedDocument
-): SessionState | null {
-  const entry = sessions.get(sessionId);
+): Promise<SessionState | null> {
+  const entry = await loadEntry(sessionId);
   if (!entry) return null;
 
   const { state } = entry;
@@ -133,6 +149,8 @@ export function applyOcrResult(
   const allCollected = { ...state.extractedFields, ...state.collectedFields };
   state.missingRequired = REQUIRED_FIELDS[state.insuranceType].filter(f => !allCollected[f]);
   state.updatedAt = Date.now();
+
+  saveEntry(entry);  // persist after mutation
 
   logEvent({
     userId, userEmail, sessionId,
@@ -164,7 +182,7 @@ export async function processMessage(
   userMessage: string,
   companyNames: string[]
 ): Promise<ChatTurn> {
-  const entry = sessions.get(sessionId);
+  const entry = await loadEntry(sessionId);
   if (!entry) {
     return { message: 'Session not found. Please start a new chat.', sessionId, status: 'error', fieldsReady: false };
   }
@@ -218,6 +236,7 @@ export async function processMessage(
       meta:    { fieldCount: Object.keys(state.confirmedFields).length, fieldNames: Object.keys(state.confirmedFields) },
     } as AuditEvent);
 
+    saveEntry(entry);  // persist after the tool-call mutation
     return { message: confirmText, sessionId, status: 'confirming', fieldsReady: true, confirmedFields: state.confirmedFields };
   }
 
@@ -237,13 +256,14 @@ export async function processMessage(
   const message   = textBlock?.text ?? '';
   history.push({ role: 'assistant', content: response.content });
 
+  saveEntry(entry);  // persist history append
   return { message, sessionId, status: state.status, fieldsReady: false };
 }
 
 export function deleteSession(sessionId: string) {
-  sessions.delete(sessionId);
+  deleteEntry(sessionId);
 }
 
 export function getSessionStats() {
-  return { activeSessions: sessions.size };
+  return { activeSessions: cacheSize() };
 }

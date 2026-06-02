@@ -2,7 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import multer from 'multer';
 import { requireAuth } from '../middleware/auth';
 import { extractDocument } from '../document/ocr';
-import { applyOcrResult, getSession } from '../ai/conversation';
+import { applyOcrResult, ensureSession } from '../ai/conversation';
 import { logEvent } from '../audit/logger';
 
 const router  = Router();
@@ -11,7 +11,11 @@ const upload  = multer({
   storage,
   limits: { fileSize: 20 * 1024 * 1024 }, // 20 MB
   fileFilter: (_req, file, cb) => {
-    const allowed = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
+    const allowed = [
+      'image/jpeg', 'image/png', 'image/webp',
+      'image/heic', 'image/heif',
+      'application/pdf',
+    ];
     cb(null, allowed.includes(file.mimetype));
   },
 });
@@ -27,7 +31,7 @@ router.post('/upload/:sessionId', requireAuth, upload.single('file'), async (req
       return;
     }
 
-    const state = getSession(sessionId);
+    const state = await ensureSession(sessionId);
     if (!state) { res.status(404).json({ success: false, message: 'Session not found' }); return; }
     if (state.userId !== user.sub) { res.status(403).json({ success: false, message: 'Not your session' }); return; }
 
@@ -51,12 +55,13 @@ router.post('/upload/:sessionId', requireAuth, upload.single('file'), async (req
       return;
     }
 
-    const updatedState = applyOcrResult(sessionId, user.sub, user.email, extractedDoc);
+    const updatedState = await applyOcrResult(sessionId, user.sub, user.email, extractedDoc);
 
     res.json({
       success:        true,
       docType:        extractedDoc.docType,
       confidence:     extractedDoc.confidence,
+      fields:          extractedDoc.fields,                  // ← the wizard reads this
       fieldsExtracted: Object.keys(extractedDoc.fields).length,
       missingFields:  updatedState?.missingRequired ?? [],
       message: extractedDoc.confidence >= 0.7

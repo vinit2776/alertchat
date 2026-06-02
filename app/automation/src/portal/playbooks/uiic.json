@@ -216,6 +216,34 @@
     "result_page_indicator": "table.table-bordered, .panel-success, #premiumDetails",
     "premium_selector": "table.table-bordered tbody tr:first-child td:last-child, table.table-bordered tr:last-child td:last-child",
     "idv_selector": "td:has-text('IDV') + td, .idv-amount",
+    "od_premium_selector": "td:has-text('Own Damage') + td, td:has-text('OD Premium') + td",
+    "tp_premium_selector": "td:has-text('Third Party') + td, td:has-text('TP Premium') + td",
+    "gst_selector": "td:has-text('GST') + td, td:has-text('Service Tax') + td",
+    "ncb_amount_selector": "td:has-text('NCB') + td:not(:has-text('%'))",
+    "addon_zero_dep_selector": "td:has-text('Zero Depreciation') + td, td:has-text('Nil Depreciation') + td",
+    "addon_engine_protect_selector": "td:has-text('Engine Protection') + td, td:has-text('Engine Protector') + td",
+    "addon_rsa_selector": "td:has-text('Road Side Assistance') + td, td:has-text('RSA') + td",
+    "addon_pa_selector": "td:has-text('Personal Accident') + td, td:has-text('PA Cover') + td",
+    "quote_ref_selector": "td:has-text('Quote') + td, .quote-ref, #quoteNumber",
     "full_page_screenshot": true
+  },
+
+  "buy_flow": {
+    "_comment": "TODO: fill in real selectors once UIIC buy flow is observed. Demo will show the infrastructure works but actual click sequence needs verification.",
+    "steps": [
+      {
+        "step_id": "click_proceed_to_buy",
+        "label": "Click Proceed to Buy",
+        "fields": [],
+        "next_trigger": { "selector": "button:has-text('Proceed'), button:has-text('Buy Now'), #proceedBtn, input[value='Proceed']", "action": "click" },
+        "wait_after": ".payment-page, #paymentSection, [class*='payu'], [class*='razorpay'], iframe[src*='payu'], iframe[src*='razorpay']"
+      }
+    ],
+    "payment_url_extractor": {
+      "strategy": "current_url",
+      "url_regex": "https?://[^\\s\"']*(?:payu|razorpay|billdesk|ccavenue|paymentgateway)[^\\s\"']*"
+    },
+    "confirmation_number_selector": ".confirmation-number, #confirmationNo, td:has-text('Reference') + td",
+    "policy_pdf_link_selector": "a[href*='.pdf'], a:has-text('Download Policy')"
   }
 }

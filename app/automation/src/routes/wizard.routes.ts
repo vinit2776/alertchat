@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth } from '../middleware/auth';
-import { getSession } from '../ai/conversation';
+import { ensureSession, persistSession } from '../ai/conversation';
 import { logEvent } from '../audit/logger';
 import { InsurancePreference, ClaimsInfo } from '../types';
 
@@ -16,6 +16,32 @@ const REQUIRED: Record<string, string[]> = {
   travel:   ['destination', 'departure_date', 'return_date', 'traveller_count', 'passport_numbers'],
 };
 
+// Map raw OCR field names (varies by document type) → canonical wizard field names.
+// Documents may use different conventions; we standardise so downstream checks work.
+function normaliseFields(raw: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = { ...raw };
+
+  // Policy schedule "policy_end" → required "previous_policy_expiry"
+  if (raw.policy_end && !raw.previous_policy_expiry)
+    out.previous_policy_expiry = raw.policy_end;
+  if (raw.expiry_date && !raw.previous_policy_expiry)
+    out.previous_policy_expiry = raw.expiry_date;
+
+  // Some policies use "vehicle_number" — also valid registration number
+  if (raw.vehicle_number && !raw.registration_number)
+    out.registration_number = raw.vehicle_number;
+
+  // RC may use "year_of_manufacture"
+  if (raw.year_of_manufacture && !raw.manufacturing_year)
+    out.manufacturing_year = raw.year_of_manufacture;
+
+  // Policy "insured_name" can fill owner_name if RC didn't capture it
+  if (raw.insured_name && !raw.owner_name)
+    out.owner_name = raw.insured_name;
+
+  return out;
+}
+
 // ── POST /api/wizard/:sessionId ────────────────────────────────────────────
 // Submit all wizard data at once — no Claude API call needed.
 // Merges OCR fields + manual overrides + claims-derived fields,
@@ -25,7 +51,7 @@ router.post('/:sessionId', requireAuth, async (req: Request, res: Response, next
     const { sessionId } = req.params;
     const user = req.user!;
 
-    const state = getSession(sessionId);
+    const state = await ensureSession(sessionId);
     if (!state) {
       res.status(404).json({ success: false, message: 'Session not found' });
       return;
@@ -50,9 +76,12 @@ router.post('/:sessionId', requireAuth, async (req: Request, res: Response, next
       return;
     }
 
-    // ── Merge fields: OCR → manual overrides ──────────────────────────────
+    // ── Normalise OCR field names (e.g. policy_end → previous_policy_expiry) ──
+    const normalisedExtracted = normaliseFields(state.extractedFields);
+
+    // ── Merge fields: OCR (normalised) → manual overrides ─────────────────
     const merged: Record<string, string> = {
-      ...state.extractedFields,
+      ...normalisedExtracted,
       ...manualFields,
     };
 
@@ -71,7 +100,7 @@ router.post('/:sessionId', requireAuth, async (req: Request, res: Response, next
     for (const [k, v] of Object.entries(merged)) {
       state.collectedFields[k] = v;
     }
-    state.confirmedFields = { ...state.extractedFields, ...state.collectedFields };
+    state.confirmedFields = { ...normalisedExtracted, ...state.collectedFields };
     state.preferences     = preferences;
     state.claimsInfo      = claimsInfo;
 
@@ -81,6 +110,8 @@ router.post('/:sessionId', requireAuth, async (req: Request, res: Response, next
 
     state.status    = state.missingRequired.length === 0 ? 'confirming' : 'collecting';
     state.updatedAt = Date.now();
+
+    persistSession(sessionId);  // persist wizard mutations across restarts
 
     logEvent({
       userId:    user.sub,

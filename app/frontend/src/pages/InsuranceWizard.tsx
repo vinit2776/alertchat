@@ -87,11 +87,12 @@ export default function InsuranceWizard({ token, sessionId, insType, onComplete,
   const policyRef  = useRef<HTMLInputElement>(null);
 
   // All extracted fields merged from all uploaded docs
-  const allExtracted: Record<string, string> = {
+  // Normalise field names: OCR uses some different conventions than our required fields
+  const allExtracted: Record<string, string> = normaliseFields({
     ...rcFront.fields,
     ...rcBack.fields,
     ...policy.fields,
-  };
+  });
 
   // NCB auto-set from claims
   const effectiveFields = { ...allExtracted, ...manualFields };
@@ -221,10 +222,25 @@ export default function InsuranceWizard({ token, sessionId, insType, onComplete,
               onFile={f => uploadDoc(f, setPolicy)}
             />
 
-            {/* Show summary of extracted fields */}
+            {/* Cross-validation warnings (RC reg vs policy vehicle number) */}
+            {(() => {
+              const rcReg     = (rcFront.fields.registration_number ?? rcBack.fields.registration_number ?? '').replace(/\s+/g, '').toUpperCase();
+              const polReg    = (policy.fields.vehicle_number ?? policy.fields.registration_number ?? '').replace(/\s+/g, '').toUpperCase();
+              if (rcReg && polReg && rcReg !== polReg) {
+                return (
+                  <div style={s.warnBox}>
+                    ⚠️ Registration number on your RC ({rcReg}) doesn't match the policy ({polReg}).
+                    Please verify you uploaded documents for the same vehicle.
+                  </div>
+                );
+              }
+              return null;
+            })()}
+
+            {/* Show summary of extracted fields, grouped by source */}
             {Object.keys(allExtracted).length > 0 && (
               <div style={s.extractedBox}>
-                <div style={s.extractedTitle}>✅ Extracted so far</div>
+                <div style={s.extractedTitle}>✅ Auto-filled from your documents</div>
                 <div style={s.extractedGrid}>
                   {Object.entries(allExtracted).filter(([k]) => FIELD_LABELS[k]).map(([k, v]) => (
                     <div key={k} style={s.extractedRow}>
@@ -235,6 +251,43 @@ export default function InsuranceWizard({ token, sessionId, insType, onComplete,
                 </div>
               </div>
             )}
+
+            {/* Inline form for fields documents don't contain (mobile/email).
+                Compute "missing" from DOCUMENT extractions only — not effectiveFields,
+                or fields would disappear as soon as user types one character. */}
+            {rcFront.status === 'done' && (() => {
+              const fieldsToShow = ['owner_mobile', 'owner_email', 'previous_policy_expiry', 'ncb_percentage']
+                .filter(f => !allExtracted[f]);   // only present if NOT extracted from docs
+              if (fieldsToShow.length === 0) return null;
+              return (
+                <div style={s.missingInlineBox}>
+                  <div style={s.missingInlineTitle}>📝 Just a few more details we need</div>
+                  <div style={s.missingInlineHint}>
+                    {fieldsToShow.includes('owner_mobile') || fieldsToShow.includes('owner_email')
+                      ? 'These aren\'t printed on your RC, so we need them from you.'
+                      : 'These weren\'t on the policy document.'}
+                  </div>
+                  {fieldsToShow.map(field => (
+                    <div key={field} style={s.missingInlineRow}>
+                      <label style={s.missingInlineLabel}>{FIELD_LABELS[field] ?? field}</label>
+                      <input
+                        style={s.missingInlineInput}
+                        type={field === 'owner_email' ? 'email' : field === 'owner_mobile' ? 'tel' : 'text'}
+                        placeholder={
+                          field === 'owner_mobile'         ? '10-digit mobile' :
+                          field === 'owner_email'          ? 'name@example.com' :
+                          field === 'previous_policy_expiry' ? 'DD/MM/YYYY' :
+                          field === 'ncb_percentage'       ? '0, 20, 25, 35, 45, or 50' :
+                          ''
+                        }
+                        value={manualFields[field] ?? ''}
+                        onChange={e => setManualFields(p => ({ ...p, [field]: e.target.value }))}
+                      />
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
 
             <button
               style={{ ...s.nextBtn, opacity: rcFront.status === 'idle' ? 0.5 : 1 }}
@@ -348,24 +401,36 @@ export default function InsuranceWizard({ token, sessionId, insType, onComplete,
         )}
 
         {/* ── STEP 4: Review ── */}
-        {step === 4 && (
+        {step === 4 && (() => {
+          const stillMissing = REQUIRED_MOTOR.filter(f => !effectiveFields[f] && !manualFields[f]);
+          const allGood = stillMissing.length === 0;
+          return (
           <div style={s.card}>
-            <div style={s.cardTitle}>🔍 Review Your Details</div>
-            <div style={s.cardSub}>Check everything is correct. Edit any field by clicking it.</div>
+            <div style={s.cardTitle}>{allGood ? '🎉 Everything looks great' : '🔍 A few details to confirm'}</div>
+            <div style={s.cardSub}>
+              {allGood
+                ? 'All required information has been captured. Click below to get your live quotes.'
+                : 'Please fill in the highlighted fields below.'}
+            </div>
 
-            {/* Extracted + editable fields */}
+            {/* Show all fields — read-only if filled, editable if missing */}
             <div style={s.reviewGrid}>
               {REQUIRED_MOTOR.map(field => {
                 const val = effectiveFields[field] ?? '';
                 const isManual = manualFields[field] !== undefined;
                 const isMissing = !val;
+                const source =
+                  rcFront.fields[field] || rcBack.fields[field] ? 'RC' :
+                  policy.fields[field]                          ? 'Policy' :
+                  isManual                                      ? 'You' : '';
                 return (
                   <div key={field} style={{ ...s.reviewRow, ...(isMissing ? s.reviewRowMissing : {}) }}>
                     <div style={s.reviewLabel}>
                       {isMissing && <span style={{ color: '#dc2626' }}>* </span>}
                       {FIELD_LABELS[field] ?? field}
+                      {source && !isMissing && <span style={s.sourceTag}> {source}</span>}
                       {field === 'ncb_percentage' && claims.hasClaim === true && (
-                        <span style={s.autoTag}> auto (claim)</span>
+                        <span style={s.autoTag}> claim → 0%</span>
                       )}
                     </div>
                     <input
@@ -402,14 +467,15 @@ export default function InsuranceWizard({ token, sessionId, insType, onComplete,
             <div style={{ display: 'flex', gap: 8, marginTop: 20 }}>
               <button style={s.backStepBtn} onClick={() => setStep(3)}>← Back</button>
               <button
-                style={{ ...s.quoteBtn, opacity: (submitting || missing.filter(f => !manualFields[f]).length > 0) ? 0.6 : 1 }}
-                disabled={submitting || missing.filter(f => !manualFields[f]).length > 0}
+                style={{ ...s.quoteBtn, opacity: (submitting || !allGood) ? 0.6 : 1 }}
+                disabled={submitting || !allGood}
                 onClick={submit}>
                 {submitting ? '⏳ Preparing…' : '🚀 Get Quotes Now'}
               </button>
             </div>
           </div>
-        )}
+          );
+        })()}
       </div>
     </div>
   );
@@ -481,6 +547,28 @@ function emptyDoc(): DocState {
   return { file: null, status: 'idle', docType: '', fields: {}, message: '' };
 }
 
+// Map OCR field names to the wizard's expected field names
+function normaliseFields(raw: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = { ...raw };
+  // Policy schedule uses "policy_end" — the wizard expects "previous_policy_expiry"
+  if (raw.policy_end && !raw.previous_policy_expiry) {
+    out.previous_policy_expiry = raw.policy_end;
+  }
+  // Policy schedule "insured_name" → owner_name (fall back if RC didn't extract it)
+  if (raw.insured_name && !raw.owner_name) {
+    out.owner_name = raw.insured_name;
+  }
+  // Some RCs use "year_of_manufacture" instead of "manufacturing_year"
+  if (raw.year_of_manufacture && !raw.manufacturing_year) {
+    out.manufacturing_year = raw.year_of_manufacture;
+  }
+  // Some policies use "expiry_date" instead of "policy_end"
+  if (raw.expiry_date && !raw.previous_policy_expiry) {
+    out.previous_policy_expiry = raw.expiry_date;
+  }
+  return out;
+}
+
 // ── Styles ─────────────────────────────────────────────────────────────────
 
 const s: Record<string, React.CSSProperties> = {
@@ -529,6 +617,14 @@ const s: Record<string, React.CSSProperties> = {
   reviewInputMissing:{ borderColor: '#fca5a5', background: '#fff' },
   reviewInputManual: { borderColor: '#1a5276', background: '#e8f0f7' },
   autoTag:       { fontSize: 10, background: '#dbeafe', color: '#1d4ed8', borderRadius: 4, padding: '1px 5px', marginLeft: 4 },
+  sourceTag:     { fontSize: 10, background: '#f1f5f9', color: '#64748b', borderRadius: 4, padding: '1px 5px', marginLeft: 4, fontWeight: 400 },
+  warnBox:       { background: '#fffbeb', border: '1.5px solid #fde68a', borderRadius: 8, padding: '10px 12px', fontSize: 13, color: '#92400e', marginTop: 12, marginBottom: 4, lineHeight: 1.5 },
+  missingInlineBox:   { background: '#fef3c7', border: '1px solid #fcd34d', borderRadius: 10, padding: '14px', marginTop: 12, marginBottom: 16 },
+  missingInlineTitle: { fontSize: 14, fontWeight: 700, color: '#92400e', marginBottom: 2 },
+  missingInlineHint:  { fontSize: 12, color: '#92400e', marginBottom: 10, lineHeight: 1.4 },
+  missingInlineRow:   { display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 8 },
+  missingInlineLabel: { fontSize: 12, fontWeight: 600, color: '#78350f' },
+  missingInlineInput: { padding: '8px 10px', border: '1.5px solid #fcd34d', borderRadius: 6, fontSize: 14, background: '#fff' },
   prefSummary:   { background: '#f0f4f8', borderRadius: 8, padding: '10px 12px', fontSize: 12, lineHeight: 1.8, marginBottom: 8 },
   prefSummaryTitle: { fontWeight: 600, color: '#1a5276', marginRight: 6 },
   prefTag:       { display: 'inline-block', background: '#e8f0f7', borderRadius: 20, padding: '2px 8px', margin: '2px 3px', color: '#1a5276', fontWeight: 500 },
