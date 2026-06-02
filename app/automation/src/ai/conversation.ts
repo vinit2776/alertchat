@@ -6,7 +6,7 @@ import { logEvent } from '../audit/logger';
 import {
   loadEntry, getCached, saveEntry, deleteEntry, cacheSize,
 } from '../session/session-store';
-import { startActiveObservation, startObservation, propagateAttributes } from './langfuse-client';
+import { getLangfuse } from './langfuse-client';
 import { analyzeGapsForAll } from '../portal/knowledge-engine';
 
 let _client: Anthropic | null = null;
@@ -234,99 +234,87 @@ export async function processMessage(
   const { state, history } = entry;
   history.push({ role: 'user', content: userMessage });
 
-  // v5: startActiveObservation creates the root trace; propagateAttributes binds
-  // userId + sessionId to every child observation automatically via OTel context.
-  return await startActiveObservation('chat-turn', async (trace) => {
-    trace.update({ input: { userMessage, insuranceType: state.insuranceType, turnCount: history.length } });
-
-    return await propagateAttributes(
-      { userId, sessionId, tags: [state.insuranceType, 'chat'] },
-      async () => {
-        const MODEL = 'claude-sonnet-4-6';
-        const systemPrompt = buildSystemPrompt(state, companyNames);
-
-        // ── First Claude call: collect fields or continue conversation ───────
-        const gen1 = startObservation('chat-collect', {
-          model:           MODEL,
-          input:           { system: systemPrompt, messages: history },
-          modelParameters: { max_tokens: 1024 },
-        }, { asType: 'generation' });
-
-        const response = await getClient().messages.create({
-          model: MODEL, max_tokens: 1024, system: systemPrompt, tools: [COLLECT_TOOL], messages: history,
-        });
-
-        gen1.update({
-          output:       response.content,
-          usageDetails: { input: response.usage.input_tokens, output: response.usage.output_tokens },
-        }).end();
-
-        const toolCall = response.content.find((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use');
-
-        if (toolCall?.name === 'collect_fields') {
-          const input = toolCall.input as { fields: Record<string, string>; ready_for_quote: boolean };
-
-          for (const [k, v] of Object.entries(input.fields)) state.collectedFields[k] = v;
-          state.confirmedFields = { ...state.extractedFields, ...state.collectedFields };
-          state.missingRequired = computeGaps(state).map(g => g.key);
-          state.status    = state.missingRequired.length === 0 ? 'confirming' : 'collecting';
-          state.updatedAt = Date.now();
-
-          history.push({ role: 'assistant', content: response.content });
-          history.push({
-            role:    'user',
-            content: [{ type: 'tool_result', tool_use_id: toolCall.id, content: 'Fields collected successfully' }],
-          });
-
-          // ── Second Claude call: confirmation summary ─────────────────────
-          const confirmSystemPrompt = buildSystemPrompt(state, companyNames);
-          const gen2 = startObservation('chat-confirm', {
-            model:           MODEL,
-            input:           { system: confirmSystemPrompt, messages: history },
-            modelParameters: { max_tokens: 1024 },
-          }, { asType: 'generation' });
-
-          const confirmResponse = await getClient().messages.create({
-            model: MODEL, max_tokens: 1024, system: confirmSystemPrompt, tools: [COLLECT_TOOL], messages: history,
-          });
-
-          const confirmText = confirmResponse.content.find(b => b.type === 'text')?.text
-            ?? 'All details collected. Please confirm to proceed.';
-
-          gen2.update({
-            output:       confirmText,
-            usageDetails: { input: confirmResponse.usage.input_tokens, output: confirmResponse.usage.output_tokens },
-          }).end();
-
-          history.push({ role: 'assistant', content: confirmResponse.content });
-
-          logEvent({
-            userId, userEmail, sessionId,
-            action:  'fields_confirmed',
-            outcome: 'success',
-            meta:    { fieldCount: Object.keys(state.confirmedFields).length, fieldNames: Object.keys(state.confirmedFields) },
-          } as AuditEvent);
-
-          saveEntry(entry);
-          trace.update({ output: confirmText, metadata: { fieldsCollected: Object.keys(state.confirmedFields).length } });
-          return { message: confirmText, sessionId, status: 'confirming' as const, fieldsReady: true, confirmedFields: state.confirmedFields };
-        }
-
-        // Track individually chat-collected fields (field name only, no value for audit)
-        const nextMissing = state.missingRequired[0];
-        if (nextMissing && userMessage.length > 1) {
-          logEvent({ userId, userEmail, sessionId, action: 'field_collected_chat', outcome: 'success', meta: { fieldName: nextMissing } } as AuditEvent);
-        }
-
-        const message = response.content.find(b => b.type === 'text')?.text ?? '';
-        history.push({ role: 'assistant', content: response.content });
-
-        saveEntry(entry);
-        trace.update({ output: message });
-        return { message, sessionId, status: state.status, fieldsReady: false };
-      }
-    );
+  const lf    = getLangfuse();
+  const trace = lf?.trace({
+    name:     'chat-turn',
+    userId,
+    sessionId,
+    metadata: { insuranceType: state.insuranceType, selectedCompanies: state.selectedCompanies },
+    tags:     [state.insuranceType, 'chat'],
   });
+
+  const MODEL        = 'claude-sonnet-4-6';
+  const systemPrompt = buildSystemPrompt(state, companyNames);
+
+  const gen1 = trace?.generation({
+    name:  'chat-collect',
+    model: MODEL,
+    input: { system: systemPrompt, messages: history },
+  });
+  const response = await getClient().messages.create({
+    model: MODEL, max_tokens: 1024, system: systemPrompt, tools: [COLLECT_TOOL], messages: history,
+  });
+  gen1?.end({
+    output: response.content,
+    usage:  { input: response.usage.input_tokens, output: response.usage.output_tokens, unit: 'TOKENS' },
+  });
+
+  const toolCall = response.content.find((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use');
+
+  if (toolCall?.name === 'collect_fields') {
+    const input = toolCall.input as { fields: Record<string, string>; ready_for_quote: boolean };
+
+    for (const [k, v] of Object.entries(input.fields)) state.collectedFields[k] = v;
+    state.confirmedFields = { ...state.extractedFields, ...state.collectedFields };
+    state.missingRequired = computeGaps(state).map(g => g.key);
+    state.status    = state.missingRequired.length === 0 ? 'confirming' : 'collecting';
+    state.updatedAt = Date.now();
+
+    history.push({ role: 'assistant', content: response.content });
+    history.push({
+      role:    'user',
+      content: [{ type: 'tool_result', tool_use_id: toolCall.id, content: 'Fields collected successfully' }],
+    });
+
+    const confirmSystemPrompt = buildSystemPrompt(state, companyNames);
+    const gen2 = trace?.generation({
+      name:  'chat-confirm',
+      model: MODEL,
+      input: { system: confirmSystemPrompt, messages: history },
+    });
+    const confirmResponse = await getClient().messages.create({
+      model: MODEL, max_tokens: 1024, system: confirmSystemPrompt, tools: [COLLECT_TOOL], messages: history,
+    });
+    const confirmText = confirmResponse.content.find(b => b.type === 'text')?.text
+      ?? 'All details collected. Please confirm to proceed.';
+    gen2?.end({
+      output: confirmText,
+      usage:  { input: confirmResponse.usage.input_tokens, output: confirmResponse.usage.output_tokens, unit: 'TOKENS' },
+    });
+    history.push({ role: 'assistant', content: confirmResponse.content });
+
+    logEvent({
+      userId, userEmail, sessionId,
+      action:  'fields_confirmed', outcome: 'success',
+      meta:    { fieldCount: Object.keys(state.confirmedFields).length, fieldNames: Object.keys(state.confirmedFields) },
+    } as AuditEvent);
+
+    saveEntry(entry);
+    trace?.update({ output: confirmText, metadata: { fieldsCollected: Object.keys(state.confirmedFields).length } });
+    return { message: confirmText, sessionId, status: 'confirming', fieldsReady: true, confirmedFields: state.confirmedFields };
+  }
+
+  const nextMissing = state.missingRequired[0];
+  if (nextMissing && userMessage.length > 1) {
+    logEvent({ userId, userEmail, sessionId, action: 'field_collected_chat', outcome: 'success', meta: { fieldName: nextMissing } } as AuditEvent);
+  }
+
+  const message = response.content.find(b => b.type === 'text')?.text ?? '';
+  history.push({ role: 'assistant', content: response.content });
+
+  saveEntry(entry);
+  trace?.update({ output: message });
+  return { message, sessionId, status: state.status, fieldsReady: false };
 }
 
 export function deleteSession(sessionId: string) {

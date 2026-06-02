@@ -15,7 +15,7 @@ import { browserPool } from './session/pool';
 import { query, queryOne, closePool } from './db/client';
 import { startSweeper as startSessionSweeper, stopSweeper as stopSessionSweeper } from './session/session-store';
 import { startPendingActionsSweeper, stopPendingActionsSweeper } from './session/pending-actions';
-import { getLangfuseTracerProvider, tracingEnabled } from './ai/langfuse-client';
+import { shutdownLangfuse, tracingEnabled } from './ai/langfuse-client';
 
 const app = express();
 
@@ -111,9 +111,7 @@ async function shutdown(signal: string) {
   const cleanup = Promise.all([
     browserPool.shutdown().catch(e => console.error('[shutdown] browserPool:', e)),
     closePool().catch(e => console.error('[shutdown] DB pool:', e)),
-    tracingEnabled
-      ? (getLangfuseTracerProvider() as any).shutdown?.().catch((e: unknown) => console.error('[shutdown] Langfuse:', e)) ?? Promise.resolve()
-      : Promise.resolve(),
+    tracingEnabled ? shutdownLangfuse() : Promise.resolve(),
   ]);
   const deadline = new Promise<void>(r => setTimeout(() => r(), 10_000));
   await Promise.race([cleanup, deadline]);
