@@ -26,7 +26,7 @@ class BrowserPool {
           '--disable-dev-shm-usage',
           // Anti-bot: hide headless markers
           '--disable-blink-features=AutomationControlled',
-          // Memory footprint reduction for Railway containers
+          // Memory footprint reduction for Railway containers (~512MB limit)
           '--disable-gpu',
           '--disable-background-networking',
           '--disable-extensions',
@@ -37,7 +37,11 @@ class BrowserPool {
           '--mute-audio',
           '--no-first-run',
           '--safebrowsing-disable-auto-update',
-          '--js-flags=--max-old-space-size=512',
+          '--js-flags=--max-old-space-size=256',
+          // Single-process: renderer runs in browser process — saves ~100MB per context
+          '--single-process',
+          // Limit tab/renderer count
+          '--renderer-process-limit=1',
         ],
       });
     }
@@ -69,6 +73,16 @@ class BrowserPool {
       Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (window as any).chrome = { runtime: {} };
+    });
+
+    // Block images, fonts and media to reduce memory/network usage in containers
+    await context.route('**/*', route => {
+      const type = route.request().resourceType();
+      if (type === 'image' || type === 'font' || type === 'media') {
+        route.abort();
+      } else {
+        route.continue();
+      }
     });
 
     slot.context    = context;
