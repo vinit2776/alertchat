@@ -10,6 +10,7 @@ import adminRoutes    from './routes/admin.routes';
 import quoteRoutes    from './routes/quote.routes';
 import usersRoutes    from './routes/users.routes';
 import wizardRoutes   from './routes/wizard.routes';
+import { globalLimit, loginLimit, uploadLimit, quoteLimit, wizardLimit } from './middleware/rate-limit';
 import { browserPool } from './session/pool';
 import { query, queryOne } from './db/client';
 
@@ -20,9 +21,23 @@ app.use(cors({ origin: corsOrigin, credentials: config.nodeEnv !== 'development'
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
+// /health is intentionally unrate-limited so Railway healthchecks keep working
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', service: 'alert-automation', env: config.nodeEnv, ts: new Date().toISOString() });
 });
+
+// Trust the X-Forwarded-For header set by Railway's proxy so rate-limiting
+// keys by the real client IP, not the proxy's IP.
+app.set('trust proxy', 1);
+
+// ── Apply rate limits per route ─────────────────────────────────────────
+// Specific limits applied first; globalLimit catches anything not covered.
+app.use('/api/auth/login', loginLimit);
+app.use('/api/documents/upload', uploadLimit);
+app.use('/api/quotes/:sessionId/start', quoteLimit);
+app.use('/api/quotes/:sessionId/proceed', quoteLimit);
+app.use('/api/wizard',    wizardLimit);
+app.use(globalLimit);
 
 app.use('/api/auth',      authRoutes);
 app.use('/api/users',     usersRoutes);
