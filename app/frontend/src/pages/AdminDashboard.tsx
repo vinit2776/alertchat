@@ -16,7 +16,7 @@ interface Analytics {
   liveSessions: number;
 }
 
-type AdminView = 'dashboard' | 'sessions' | 'companies' | 'quotes';
+type AdminView = 'dashboard' | 'sessions' | 'companies' | 'quotes' | 'ai-costs';
 
 interface Props {
   token: string;
@@ -49,6 +49,7 @@ export default function AdminDashboard({ token, onBack, onCompanies, onUsers }: 
     { key: 'sessions',  label: '📋 Sessions' },
     { key: 'companies', label: '🏢 Companies' },
     { key: 'quotes',    label: '📄 Quotes' },
+    { key: 'ai-costs',  label: '🤖 AI Costs' },
   ];
 
   return (
@@ -84,6 +85,7 @@ export default function AdminDashboard({ token, onBack, onCompanies, onUsers }: 
           {view === 'sessions'  && <SessionsPanel  token={token} />}
           {view === 'companies' && <CompaniesPanel token={token} />}
           {view === 'quotes'    && <QuotesPanel    token={token} />}
+          {view === 'ai-costs'  && <AiCostsPanel   token={token} />}
         </main>
       </div>
     </div>
@@ -334,6 +336,202 @@ function QuotesPanel({ token }: { token: string }) {
     </div>
   );
 }
+
+// ── AI Costs Panel ────────────────────────────────────────────────────────
+
+interface AiSummary {
+  observationCount: number; sessionCount: number;
+  totalInputTokens: number; totalOutputTokens: number; totalTokens: number;
+  estimatedCostUsd: number; avgCostPerSession: number; avgCostPerQuote: number | null;
+}
+interface AiFeature {
+  name: string; count: number;
+  inputTokens: number; outputTokens: number; totalTokens: number; estimatedCostUsd: number;
+}
+interface AiSession {
+  sessionId: string; userId: string; userEmail: string; insType: string;
+  quoteGenerated: boolean; firstSeen: string;
+  inputTokens: number; outputTokens: number; totalTokens: number;
+  estimatedCostUsd: number; features: string[];
+}
+
+const FEATURE_LABELS: Record<string, string> = {
+  'chat-collect':  'Chat (collect)',
+  'chat-confirm':  'Chat (confirm)',
+  'ocr':           'OCR',
+  'captcha-solve': 'Captcha',
+};
+
+function fmt$(n: number) {
+  if (n < 0.001) return '<$0.001';
+  if (n < 1)     return `$${n.toFixed(4)}`;
+  return `$${n.toFixed(3)}`;
+}
+function fmtTok(n: number) {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
+  if (n >= 1_000)     return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
+
+function AiCostsPanel({ token }: { token: string }) {
+  const [data, setData]     = useState<{ summary: AiSummary; byFeature: AiFeature[]; sessions: AiSession[] } | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError]   = useState('');
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true); setError('');
+      try {
+        const res  = await fetch(`${autoBase}/api/admin/ai-analytics`, { headers: { Authorization: `Bearer ${token}` } });
+        const json = await res.json();
+        if (!json.success) throw new Error(json.message || 'Failed to load');
+        if (!json.enabled) { setError('Langfuse not configured — add LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY to Railway.'); return; }
+        setData(json);
+      } catch (e: any) { setError(e.message); }
+      finally { setLoading(false); }
+    })();
+  }, [token]);
+
+  if (loading) return <div style={s.empty}>Loading AI cost analytics…</div>;
+  if (error)   return <div style={{ ...s.error, marginTop: 0 }}>{error}</div>;
+  if (!data)   return null;
+
+  const { summary: sm, byFeature, sessions } = data;
+  const maxCost = Math.max(...sessions.map(s => s.estimatedCostUsd), 0.000001);
+
+  return (
+    <div>
+      {/* Summary cards */}
+      <div style={ac.grid}>
+        <AcCard label="Sessions (7d)"      value={sm.sessionCount}                      />
+        <AcCard label="Total tokens"       value={fmtTok(sm.totalTokens)}               />
+        <AcCard label="Est. cost (7d)"     value={fmt$(sm.estimatedCostUsd)} highlight  />
+        <AcCard label="Cost / session"     value={fmt$(sm.avgCostPerSession)}            />
+        <AcCard label="Cost / quote"       value={sm.avgCostPerQuote != null ? fmt$(sm.avgCostPerQuote) : '—'} />
+        <AcCard label="LLM calls"          value={sm.observationCount}                  />
+      </div>
+
+      {/* Token breakdown bar */}
+      {sm.totalTokens > 0 && (
+        <div style={ac.section}>
+          <div style={ac.sectionTitle}>Token split — input vs output</div>
+          <div style={ac.barTrack}>
+            <div style={{ ...ac.barFill, width: `${(sm.totalInputTokens / sm.totalTokens) * 100}%`, background: '#1a56db' }} />
+            <div style={{ ...ac.barFill, width: `${(sm.totalOutputTokens / sm.totalTokens) * 100}%`, background: '#7c3aed' }} />
+          </div>
+          <div style={ac.barLegend}>
+            <span><span style={{ ...ac.dot, background: '#1a56db' }} />Input {fmtTok(sm.totalInputTokens)} ({Math.round(sm.totalInputTokens / sm.totalTokens * 100)}%)</span>
+            <span><span style={{ ...ac.dot, background: '#7c3aed' }} />Output {fmtTok(sm.totalOutputTokens)} ({Math.round(sm.totalOutputTokens / sm.totalTokens * 100)}%)</span>
+          </div>
+        </div>
+      )}
+
+      {/* Cost by feature */}
+      {byFeature.length > 0 && (
+        <div style={ac.section}>
+          <div style={ac.sectionTitle}>Cost by feature</div>
+          {byFeature.map(f => {
+            const pct = sm.estimatedCostUsd > 0 ? (f.estimatedCostUsd / sm.estimatedCostUsd) * 100 : 0;
+            return (
+              <div key={f.name} style={ac.featureRow}>
+                <div style={ac.featureName}>{FEATURE_LABELS[f.name] ?? f.name}</div>
+                <div style={ac.featureBar}>
+                  <div style={{ ...ac.featureBarFill, width: `${Math.max(pct, 1)}%` }} />
+                </div>
+                <div style={ac.featureCost}>{fmt$(f.estimatedCostUsd)}</div>
+                <div style={ac.featureMeta}>{fmtTok(f.totalTokens)} tok · {f.count} calls</div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Per-session table */}
+      <div style={ac.section}>
+        <div style={ac.sectionTitle}>Per-session breakdown ({sessions.length} sessions)</div>
+        <table style={{ ...ov.table, boxShadow: 'none', borderRadius: 0 }}>
+          <thead><tr>
+            {['Session', 'User', 'Type', 'Date', 'Quote', 'Tokens', 'Cost', 'Cost bar'].map(h => (
+              <th key={h} style={ov.th}>{h}</th>
+            ))}
+          </tr></thead>
+          <tbody>
+            {sessions.map(sess => (
+              <>
+                <tr key={sess.sessionId} style={{ ...ov.tr, cursor: 'pointer' }}
+                  onClick={() => setExpanded(expanded === sess.sessionId ? null : sess.sessionId)}>
+                  <td style={{ ...ov.td, fontFamily: 'monospace', fontSize: 11 }}>
+                    {sess.sessionId.slice(0, 8)}…
+                    <span style={{ marginLeft: 4, color: '#94a3b8', fontSize: 10 }}>{expanded === sess.sessionId ? '▲' : '▼'}</span>
+                  </td>
+                  <td style={{ ...ov.td, fontSize: 12 }}>{sess.userEmail}</td>
+                  <td style={ov.td}><span style={ac.insTag}>{sess.insType}</span></td>
+                  <td style={{ ...ov.td, fontSize: 12, color: '#888' }}>{new Date(sess.firstSeen).toLocaleDateString('en-IN')}</td>
+                  <td style={ov.td}>{sess.quoteGenerated ? '✅' : <span style={{ color: '#94a3b8' }}>—</span>}</td>
+                  <td style={{ ...ov.td, fontFamily: 'monospace', fontSize: 12 }}>{fmtTok(sess.totalTokens)}</td>
+                  <td style={{ ...ov.td, fontWeight: 600, color: '#1a5276' }}>{fmt$(sess.estimatedCostUsd)}</td>
+                  <td style={{ ...ov.td, width: 100, paddingRight: 16 }}>
+                    <div style={ac.miniBarTrack}>
+                      <div style={{ ...ac.miniBarFill, width: `${(sess.estimatedCostUsd / maxCost) * 100}%` }} />
+                    </div>
+                  </td>
+                </tr>
+                {expanded === sess.sessionId && (
+                  <tr key={`${sess.sessionId}-detail`}>
+                    <td colSpan={8} style={{ padding: '8px 16px 12px', background: '#f8fafc', borderBottom: '1px solid #e5e7eb' }}>
+                      <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', fontSize: 12 }}>
+                        <span><b>Session ID:</b> <code style={{ fontFamily: 'monospace', fontSize: 11 }}>{sess.sessionId}</code></span>
+                        <span><b>Input:</b> {fmtTok(sess.inputTokens)} tok</span>
+                        <span><b>Output:</b> {fmtTok(sess.outputTokens)} tok</span>
+                        <span><b>Features:</b> {sess.features.map(f => FEATURE_LABELS[f] ?? f).join(', ')}</span>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </>
+            ))}
+            {sessions.length === 0 && (
+              <tr><td colSpan={8} style={{ ...ov.td, textAlign: 'center', color: '#888' }}>No sessions traced yet</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 8 }}>
+        Costs estimated using list pricing: Sonnet 4.6 $3/$15 per 1M tokens input/output · Haiku 4.5 $0.80/$4. Last 7 days.
+      </div>
+    </div>
+  );
+}
+
+function AcCard({ label, value, highlight }: { label: string; value: string | number; highlight?: boolean }) {
+  return (
+    <div style={{ ...ov.statCard, ...(highlight ? { background: '#1e3a5f', color: '#fff' } : {}) }}>
+      <div style={{ ...ov.statValue, fontSize: 22 }}>{value}</div>
+      <div style={{ ...ov.statLabel, color: highlight ? 'rgba(255,255,255,0.7)' : '#888' }}>{label}</div>
+    </div>
+  );
+}
+
+const ac: Record<string, React.CSSProperties> = {
+  grid:          { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(148px, 1fr))', gap: 12, marginBottom: 20 },
+  section:       { background: '#fff', borderRadius: 12, padding: '16px 20px', marginBottom: 16, boxShadow: '0 1px 4px rgba(0,0,0,0.07)' },
+  sectionTitle:  { fontWeight: 700, color: '#1a5276', marginBottom: 14, fontSize: 14 },
+  barTrack:      { display: 'flex', height: 12, borderRadius: 6, overflow: 'hidden', background: '#f0f4f8', marginBottom: 8 },
+  barFill:       { height: '100%', transition: 'width 0.3s' },
+  barLegend:     { display: 'flex', gap: 20, fontSize: 12, color: '#555' },
+  dot:           { display: 'inline-block', width: 8, height: 8, borderRadius: '50%', marginRight: 6 },
+  featureRow:    { display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 },
+  featureName:   { width: 130, fontSize: 13, fontWeight: 600, color: '#374151', flexShrink: 0 },
+  featureBar:    { flex: 1, height: 8, background: '#f0f4f8', borderRadius: 4, overflow: 'hidden' },
+  featureBarFill: { height: '100%', background: '#1a56db', borderRadius: 4, transition: 'width 0.3s' },
+  featureCost:   { width: 70, textAlign: 'right', fontFamily: 'monospace', fontSize: 12, color: '#1a5276', fontWeight: 700 },
+  featureMeta:   { width: 130, fontSize: 11, color: '#94a3b8', textAlign: 'right' },
+  miniBarTrack:  { height: 6, background: '#f0f4f8', borderRadius: 3, overflow: 'hidden' },
+  miniBarFill:   { height: '100%', background: '#1a56db', borderRadius: 3, transition: 'width 0.3s' },
+  insTag:        { background: '#dbeafe', color: '#1e40af', fontSize: 11, fontWeight: 600, padding: '2px 6px', borderRadius: 4 },
+};
 
 // ── Styles ─────────────────────────────────────────────────────────────────
 

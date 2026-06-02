@@ -911,4 +911,166 @@ router.post('/companies/:id/test-quote', requireAdmin, async (req: Request, res:
   }
 });
 
+// ── AI Cost Analytics (Langfuse) ──────────────────────────────────────────
+
+// Cost per million tokens by model name
+const MODEL_RATES: Record<string, { input: number; output: number }> = {
+  'claude-sonnet-4-6':        { input: 3.00,  output: 15.00 },
+  'claude-sonnet-4-5':        { input: 3.00,  output: 15.00 },
+  'claude-haiku-4-5-20251001': { input: 0.80,  output:  4.00 },
+  'claude-haiku-4-5':         { input: 0.80,  output:  4.00 },
+};
+// Fallback by trace/observation name when model field is missing
+const NAME_RATES: Record<string, { input: number; output: number }> = {
+  'chat-collect':  { input: 3.00,  output: 15.00 },
+  'chat-confirm':  { input: 3.00,  output: 15.00 },
+  'ocr':           { input: 3.00,  output: 15.00 },
+  'captcha-solve': { input: 0.80,  output:  4.00 },
+};
+const DEFAULT_RATE = { input: 3.00, output: 15.00 };
+
+function tokenCost(model: string | null, name: string | null, inputTok: number, outputTok: number): number {
+  const rate = (model && MODEL_RATES[model]) || (name && NAME_RATES[name]) || DEFAULT_RATE;
+  return (inputTok * rate.input + outputTok * rate.output) / 1_000_000;
+}
+
+router.get('/ai-analytics', requireAdmin, async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { langfuse: lf } = config;
+    if (!lf.publicKey || !lf.secretKey) {
+      return res.json({ success: true, enabled: false });
+    }
+
+    const auth      = Buffer.from(`${lf.publicKey}:${lf.secretKey}`).toString('base64');
+    const base      = lf.baseUrl;
+    const headers   = { Authorization: `Basic ${auth}`, Accept: 'application/json' };
+    const fromTs    = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const fromParam = encodeURIComponent(fromTs);
+
+    // Fetch observations (token-level) and traces (sessionId) in parallel
+    const [obsRes, tracesRes] = await Promise.all([
+      fetch(`${base}/api/public/observations?type=GENERATION&fromStartTime=${fromParam}&limit=500`, { headers }),
+      fetch(`${base}/api/public/traces?fromTimestamp=${fromParam}&limit=200`, { headers }),
+    ]);
+
+    if (!obsRes.ok || !tracesRes.ok) {
+      const msg = !obsRes.ok ? await obsRes.text() : await tracesRes.text();
+      return res.status(502).json({ success: false, message: `Langfuse API error: ${msg.slice(0, 200)}` });
+    }
+
+    const observations: any[] = (await obsRes.json()).data    ?? [];
+    const traces:       any[] = (await tracesRes.json()).data ?? [];
+
+    // traceId → { sessionId, userId }
+    const traceCtx: Record<string, { sessionId: string; userId: string }> = {};
+    for (const t of traces) {
+      traceCtx[t.id] = { sessionId: t.sessionId ?? 'unknown', userId: t.userId ?? '' };
+    }
+
+    // Aggregate per session and per feature
+    type SessionBucket = {
+      sessionId: string; userId: string;
+      inputTok: number; outputTok: number; costUsd: number;
+      features: Set<string>; firstSeen: string;
+    };
+    const sessionBuckets: Record<string, SessionBucket> = {};
+    const featureBuckets: Record<string, { count: number; inputTok: number; outputTok: number; costUsd: number }> = {};
+
+    for (const obs of observations) {
+      const ctx       = traceCtx[obs.traceId] ?? { sessionId: 'unknown', userId: '' };
+      const sid       = ctx.sessionId;
+      const inputTok  = obs.usage?.input  ?? 0;
+      const outputTok = obs.usage?.output ?? 0;
+      const cost      = tokenCost(obs.model, obs.name, inputTok, outputTok);
+      const feature   = obs.name ?? 'unknown';
+
+      if (!sessionBuckets[sid]) {
+        sessionBuckets[sid] = {
+          sessionId: sid, userId: ctx.userId,
+          inputTok: 0, outputTok: 0, costUsd: 0,
+          features: new Set(), firstSeen: obs.startTime ?? '',
+        };
+      }
+      const sb = sessionBuckets[sid];
+      sb.inputTok  += inputTok;
+      sb.outputTok += outputTok;
+      sb.costUsd   += cost;
+      sb.features.add(feature);
+      if (obs.startTime && (!sb.firstSeen || obs.startTime < sb.firstSeen)) sb.firstSeen = obs.startTime;
+
+      if (!featureBuckets[feature]) featureBuckets[feature] = { count: 0, inputTok: 0, outputTok: 0, costUsd: 0 };
+      featureBuckets[feature].count++;
+      featureBuckets[feature].inputTok  += inputTok;
+      featureBuckets[feature].outputTok += outputTok;
+      featureBuckets[feature].costUsd   += cost;
+    }
+
+    // Join with DB sessions for user_email, ins_type, quote_generated
+    const sessionIds = Object.keys(sessionBuckets).filter(id => id !== 'unknown');
+    type DbRow = { session_id: string; user_email: string; ins_type: string; quote_generated: boolean };
+    const dbRows = sessionIds.length > 0
+      ? await query<DbRow>(
+          `SELECT session_id,
+                  MAX(user_email) AS user_email,
+                  MAX(ins_type)   AS ins_type,
+                  BOOL_OR(action = 'quote_complete') AS quote_generated
+           FROM audit_events
+           WHERE session_id = ANY($1)
+           GROUP BY session_id`,
+          [sessionIds]
+        )
+      : [];
+
+    const dbMap: Record<string, DbRow> = {};
+    for (const r of dbRows) dbMap[r.session_id] = r;
+
+    const quoteSessions  = dbRows.filter(r => r.quote_generated).length;
+    const totalInputTok  = observations.reduce((s: number, o: any) => s + (o.usage?.input  ?? 0), 0);
+    const totalOutputTok = observations.reduce((s: number, o: any) => s + (o.usage?.output ?? 0), 0);
+    const totalCost      = Object.values(sessionBuckets).reduce((s, b) => s + b.costUsd, 0);
+
+    const sessionList = Object.values(sessionBuckets)
+      .sort((a, b) => b.firstSeen.localeCompare(a.firstSeen))
+      .slice(0, 100)
+      .map(b => ({
+        sessionId:        b.sessionId,
+        userId:           b.userId,
+        userEmail:        dbMap[b.sessionId]?.user_email ?? b.userId,
+        insType:          dbMap[b.sessionId]?.ins_type   ?? '—',
+        quoteGenerated:   dbMap[b.sessionId]?.quote_generated ?? false,
+        firstSeen:        b.firstSeen,
+        inputTokens:      b.inputTok,
+        outputTokens:     b.outputTok,
+        totalTokens:      b.inputTok + b.outputTok,
+        estimatedCostUsd: b.costUsd,
+        features:         Array.from(b.features),
+      }));
+
+    res.json({
+      success: true,
+      enabled: true,
+      periodDays: 7,
+      summary: {
+        observationCount:  observations.length,
+        sessionCount:      sessionIds.length,
+        totalInputTokens:  totalInputTok,
+        totalOutputTokens: totalOutputTok,
+        totalTokens:       totalInputTok + totalOutputTok,
+        estimatedCostUsd:  totalCost,
+        avgCostPerSession: sessionIds.length  > 0 ? totalCost / sessionIds.length  : 0,
+        avgCostPerQuote:   quoteSessions      > 0 ? totalCost / quoteSessions      : null,
+      },
+      byFeature: Object.entries(featureBuckets).map(([name, d]) => ({
+        name, count: d.count,
+        inputTokens: d.inputTok, outputTokens: d.outputTok,
+        totalTokens: d.inputTok + d.outputTok,
+        estimatedCostUsd: d.costUsd,
+      })).sort((a, b) => b.estimatedCostUsd - a.estimatedCostUsd),
+      sessions: sessionList,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 export default router;
