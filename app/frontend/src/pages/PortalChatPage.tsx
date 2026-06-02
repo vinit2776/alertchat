@@ -369,7 +369,7 @@ export default function PortalChatPage({ token, onLogout, onShowHistory, onShowA
   if (phase === 'setup') {
     return (
       <div style={s.shell}>
-        <Header title="New Quote" onLogout={onLogout} onReset={reset} onHistory={onShowHistory} onAdmin={onShowAdmin} showAdmin={isAdmin} />
+        <Header title="New Quote" onLogout={onLogout} onReset={reset} onHistory={onShowHistory} onAdmin={onShowAdmin} showAdmin={isAdmin} token={token} />
         <div style={s.setupBody}>
           <div style={s.setupCard}>
             <div style={s.setupTitle}>Get Insurance Quotes</div>
@@ -439,7 +439,7 @@ export default function PortalChatPage({ token, onLogout, onShowHistory, onShowA
   if (phase === 'quoting') {
     return (
       <div style={s.shell}>
-        <Header title="Getting Quotes" onLogout={onLogout} onReset={reset} onHistory={onShowHistory} onAdmin={onShowAdmin} showAdmin={isAdmin} />
+        <Header title="Getting Quotes" onLogout={onLogout} onReset={reset} onHistory={onShowHistory} onAdmin={onShowAdmin} showAdmin={isAdmin} token={token} />
         <div style={s.feed}>
 
           {/* Progress steps from SSE */}
@@ -502,7 +502,7 @@ export default function PortalChatPage({ token, onLogout, onShowHistory, onShowA
       onDragLeave={() => setDragOver(false)}
       onDrop={handleFileDrop}>
 
-      <Header title="Quote Chat" onLogout={onLogout} onReset={reset} onHistory={onShowHistory} onAdmin={onShowAdmin} showAdmin={isAdmin} />
+      <Header title="Quote Chat" onLogout={onLogout} onReset={reset} onHistory={onShowHistory} onAdmin={onShowAdmin} showAdmin={isAdmin} token={token} />
 
       {dragOver && (
         <div style={s.dropOverlay}>
@@ -580,9 +580,25 @@ export default function PortalChatPage({ token, onLogout, onShowHistory, onShowA
 
 // ── Sub-components ─────────────────────────────────────────────────────────
 
-function Header({ title, onLogout, onReset, onHistory, onAdmin, showAdmin }: {
-  title: string; onLogout: () => void; onReset: () => void; onHistory: () => void; onAdmin?: () => void; showAdmin: boolean;
+function Header({ title, onLogout, onReset, onHistory, onAdmin, showAdmin, token }: {
+  title: string; onLogout: () => void; onReset: () => void; onHistory: () => void; onAdmin?: () => void; showAdmin: boolean; token?: string;
 }) {
+  const [failedCount, setFailedCount] = useState(0);
+  useEffect(() => {
+    if (!showAdmin || !token) return;
+    let cancelled = false;
+    async function poll() {
+      try {
+        const res = await fetch(`${autoBase}/api/admin/failed-quotes/count`, { headers: { Authorization: `Bearer ${token}` } });
+        const data = await res.json();
+        if (!cancelled && data.success) setFailedCount(data.count ?? 0);
+      } catch { /* silent */ }
+    }
+    poll();
+    const t = setInterval(poll, 30_000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, [showAdmin, token]);
+
   return (
     <div style={s.header}>
       <div style={s.headerLeft}>
@@ -590,9 +606,20 @@ function Header({ title, onLogout, onReset, onHistory, onAdmin, showAdmin }: {
         <div>
           <div style={s.headerTitle}>Alert Insurance</div>
           <div style={s.headerSub}>{title}</div>
+          <div style={{ fontSize: 9, color: 'rgba(255,255,255,0.4)', marginTop: 1 }}>
+            {__BUILD_HASH__} · {__BUILD_DATE__}
+          </div>
         </div>
       </div>
-      <div style={{ display: 'flex', gap: 6 }}>
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+        {showAdmin && failedCount > 0 && (
+          <button
+            onClick={onAdmin}
+            title={`${failedCount} portal quote${failedCount > 1 ? 's' : ''} need manual entry`}
+            style={{ background: '#dc2626', color: '#fff', border: 'none', borderRadius: 16, padding: '6px 12px', fontSize: 12, fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
+            🚨 {failedCount} failed
+          </button>
+        )}
         <button style={s.iconBtn} onClick={onHistory} title="Quote history">📋</button>
         {showAdmin && <button style={s.iconBtn} onClick={onAdmin} title="Admin">⚙️</button>}
         <button style={s.iconBtn} onClick={onReset}   title="New quote">↺</button>

@@ -19,6 +19,8 @@ import Anthropic from '@anthropic-ai/sdk';
 import { config } from '../config/env';
 import * as fs from 'fs';
 import * as path from 'path';
+import { getConnectorType } from '../connectors/registry';
+import { getCacheStatus, refreshVehicleCache } from '../connectors/bajaj/vehicle-master';
 
 let _ai: Anthropic | null = null;
 function getAI() {
@@ -117,9 +119,45 @@ async function loginToPortal(
 // ── Company registry ───────────────────────────────────────────────────────
 
 // GET /api/admin/companies
+// Returns all companies enriched with connector type and credential/cache status.
 router.get('/companies', requireAdmin, async (_req, res, next) => {
   try {
-    res.json({ success: true, companies: await getAllCompanies() });
+    const companies = await getAllCompanies();
+
+    const enriched = companies.map(c => {
+      const connectorType = getConnectorType(c.id);
+
+      // Credential status — for API connectors, check env vars (never expose values)
+      let credentialsConfigured = false;
+      let credentialNote: string | null = null;
+      if (connectorType === 'api') {
+        if (c.id === 'bajaj') {
+          credentialsConfigured = !!(config.bajaj.userId && config.bajaj.password);
+          credentialNote = credentialsConfigured
+            ? (config.bajaj.useProd ? 'Production' : 'UAT / Testing')
+            : 'Set BAJAJ_USER_ID and BAJAJ_PASSWORD in .env to activate';
+        }
+      } else {
+        // Portal: credential in vault — just check it exists
+        credentialsConfigured = true; // vault handles this; test login will surface errors
+      }
+
+      // Cache status for Bajaj
+      let cacheStatus: object | null = null;
+      if (c.id === 'bajaj') {
+        cacheStatus = getCacheStatus();
+      }
+
+      return {
+        ...c,
+        connectorType,
+        credentialsConfigured,
+        credentialNote,
+        cacheStatus,
+      };
+    });
+
+    res.json({ success: true, companies: enriched });
   } catch (err) { next(err); }
 });
 
@@ -155,6 +193,72 @@ router.put('/companies/:id', requireAdmin, async (req: Request, res: Response, n
     res.json({ success: true, company });
   } catch (err) { next(err); }
 });
+
+// ── Bajaj API management ───────────────────────────────────────────────────
+
+// GET /api/admin/bajaj/cache-status
+router.get('/bajaj/cache-status', requireAdmin, (_req, res) => {
+  res.json({ success: true, ...getCacheStatus() });
+});
+
+// POST /api/admin/bajaj/refresh-vehicles
+// Fetches all vehicle make/model/subtype data from Bajaj API and caches locally.
+// Background operation — streams progress via JSON lines response.
+router.post('/bajaj/refresh-vehicles', requireAdmin, async (req: Request, res: Response) => {
+  if (!config.bajaj.userId || !config.bajaj.password) {
+    res.status(400).json({
+      success: false,
+      message: 'Bajaj credentials not configured. Set BAJAJ_USER_ID and BAJAJ_PASSWORD in .env first.',
+    });
+    return;
+  }
+
+  const messages: string[] = [];
+  try {
+    const result = await refreshVehicleCache(
+      ['1801', '1802'],
+      (msg) => { messages.push(msg); },
+    );
+
+    logEvent({
+      userId: req.user!.sub, userEmail: req.user!.email, sessionId: 'admin',
+      action: 'admin_action', outcome: result.errors.length === 0 ? 'success' : 'failure',
+      meta: { action: 'bajaj_cache_refresh', added: result.added, errors: result.errors.length },
+    });
+
+    res.json({
+      success:  result.errors.length === 0,
+      added:    result.added,
+      errors:   result.errors,
+      messages,
+      cacheStatus: getCacheStatus(),
+    });
+  } catch (err: any) {
+    res.status(502).json({ success: false, message: err.message, messages });
+  }
+});
+
+// POST /api/admin/bajaj/test-api
+// Makes a minimal API call to verify credentials are working.
+router.post('/bajaj/test-api', requireAdmin, async (req: Request, res: Response) => {
+  if (!config.bajaj.userId || !config.bajaj.password) {
+    res.status(400).json({ success: false, message: 'Bajaj credentials not configured.' });
+    return;
+  }
+  try {
+    const { getAllVehicleMakes } = await import('../connectors/bajaj/client');
+    const makes = await getAllVehicleMakes('1801');
+    res.json({
+      success: true,
+      message: `API connected — ${makes.length} vehicle makes returned`,
+      sampleMakes: makes.slice(0, 5).map((m: any) => m.vehiclemake),
+    });
+  } catch (err: any) {
+    res.status(502).json({ success: false, message: err.message });
+  }
+});
+
+// ── Portal company tests ───────────────────────────────────────────────────
 
 // POST /api/admin/companies/:id/test
 // Logs into the portal with real Playwright, returns a screenshot and nav links.
@@ -1071,6 +1175,109 @@ router.get('/ai-analytics', requireAdmin, async (_req: Request, res: Response, n
   } catch (err) {
     next(err);
   }
+});
+
+// ── Failed Quotes (manual handoff) ─────────────────────────────────────────
+
+/**
+ * Lists portal quote attempts that failed in the last 7 days and have not yet
+ * been manually resolved. Admin can then complete the quote on the real portal
+ * and type the premium back in via /manual-entry.
+ */
+router.get('/failed-quotes', requireAdmin, async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    interface Row {
+      id: string; session_id: string; user_id: string;
+      portal_id: string; portal_name: string; ins_type: string;
+      reg_number: string | null; vehicle_make: string | null; vehicle_model: string | null;
+      premium: number | null; idv: number | null;
+      quote_data: Record<string, unknown>;
+      created_at: string;
+    }
+    const rows = await query<Row>(
+      `SELECT q.*, COALESCE(u.email, u.username) AS user_email
+       FROM quote_results q
+       LEFT JOIN app_users u ON u.id::text = q.user_id
+       WHERE q.premium IS NULL
+         AND q.created_at > now() - INTERVAL '7 days'
+         AND (q.quote_data->>'manuallyResolved') IS DISTINCT FROM 'true'
+         AND (q.quote_data->>'dismissed') IS DISTINCT FROM 'true'
+       ORDER BY q.created_at DESC
+       LIMIT 100`
+    );
+    res.json({ success: true, failures: rows });
+  } catch (err) { next(err); }
+});
+
+/** Count only — used to badge the dashboard nav. */
+router.get('/failed-quotes/count', requireAdmin, async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const row = await queryOne<{ count: string }>(
+      `SELECT COUNT(*) AS count FROM quote_results
+       WHERE premium IS NULL
+         AND created_at > now() - INTERVAL '7 days'
+         AND (quote_data->>'manuallyResolved') IS DISTINCT FROM 'true'
+         AND (quote_data->>'dismissed') IS DISTINCT FROM 'true'`
+    );
+    res.json({ success: true, count: parseInt(row?.count ?? '0', 10) });
+  } catch (err) { next(err); }
+});
+
+/**
+ * Admin types in a premium they obtained manually from the portal.
+ * Updates quote_results, sets quote_data.manuallyResolved = true, and writes an
+ * audit event so we know which quotes needed human help.
+ */
+router.post('/quotes/:id/manual-entry', requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { id }     = req.params;
+    const { premium, idv, notes } = req.body as { premium?: number; idv?: number; notes?: string };
+
+    if (typeof premium !== 'number' || premium <= 0) {
+      return res.status(400).json({ success: false, message: 'premium (positive number) required' });
+    }
+
+    const row = await queryOne<{ session_id: string; user_id: string }>(
+      'SELECT session_id, user_id FROM quote_results WHERE id = $1',
+      [id]
+    );
+    if (!row) return res.status(404).json({ success: false, message: 'Quote not found' });
+
+    await query(
+      `UPDATE quote_results
+       SET premium    = $2,
+           idv        = COALESCE($3, idv),
+           quote_data = quote_data
+                       || jsonb_build_object('manuallyResolved', 'true',
+                                              'manualEntryBy',    $4,
+                                              'manualEntryAt',    to_jsonb(now()),
+                                              'manualNotes',      COALESCE($5, ''))
+       WHERE id = $1`,
+      [id, premium, idv ?? null, req.user!.sub, notes ?? null]
+    );
+
+    logEvent({
+      userId: req.user!.sub, userEmail: req.user!.email, sessionId: row.session_id,
+      action: 'manual_quote_entry', outcome: 'success',
+      meta: { quoteResultId: id, premium, idv, hasNotes: !!notes },
+    } as any);
+
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
+/** Dismiss a failed quote without entering a premium (e.g. user gave up). */
+router.post('/quotes/:id/dismiss', requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { id } = req.params;
+    await query(
+      `UPDATE quote_results
+       SET quote_data = quote_data || jsonb_build_object('dismissed','true','dismissedBy',$2,'dismissedAt',to_jsonb(now()))
+       WHERE id = $1`,
+      [id, req.user!.sub]
+    );
+    res.json({ success: true });
+  } catch (err) { next(err); }
 });
 
 export default router;

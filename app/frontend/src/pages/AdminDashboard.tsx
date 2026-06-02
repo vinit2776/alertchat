@@ -16,7 +16,7 @@ interface Analytics {
   liveSessions: number;
 }
 
-type AdminView = 'dashboard' | 'sessions' | 'companies' | 'quotes' | 'ai-costs';
+type AdminView = 'dashboard' | 'sessions' | 'companies' | 'quotes' | 'ai-costs' | 'failed-quotes';
 
 interface Props {
   token: string;
@@ -26,10 +26,11 @@ interface Props {
 }
 
 export default function AdminDashboard({ token, onBack, onCompanies, onUsers }: Props) {
-  const [view, setView]           = useState<AdminView>('dashboard');
-  const [analytics, setAnalytics] = useState<Analytics | null>(null);
-  const [loading, setLoading]     = useState(true);
-  const [error, setError]         = useState('');
+  const [view, setView]               = useState<AdminView>('dashboard');
+  const [analytics, setAnalytics]     = useState<Analytics | null>(null);
+  const [loading, setLoading]         = useState(true);
+  const [error, setError]             = useState('');
+  const [failedCount, setFailedCount] = useState<number>(0);
 
   async function loadAnalytics() {
     setLoading(true); setError('');
@@ -42,14 +43,29 @@ export default function AdminDashboard({ token, onBack, onCompanies, onUsers }: 
     finally { setLoading(false); }
   }
 
-  useEffect(() => { loadAnalytics(); }, []);
+  async function loadFailedCount() {
+    try {
+      const res  = await fetch(`${autoBase}/api/admin/failed-quotes/count`, { headers: { Authorization: `Bearer ${token}` } });
+      const data = await res.json();
+      if (data.success) setFailedCount(data.count ?? 0);
+    } catch { /* badge is non-critical */ }
+  }
 
-  const nav: Array<{ key: AdminView; label: string }> = [
-    { key: 'dashboard', label: '📊 Overview' },
-    { key: 'sessions',  label: '📋 Sessions' },
-    { key: 'companies', label: '🏢 Companies' },
-    { key: 'quotes',    label: '📄 Quotes' },
-    { key: 'ai-costs',  label: '🤖 AI Costs' },
+  useEffect(() => {
+    loadAnalytics();
+    loadFailedCount();
+    // refresh failed count every 30 s so admins see new failures without manual refresh
+    const t = setInterval(loadFailedCount, 30_000);
+    return () => clearInterval(t);
+  }, []);
+
+  const nav: Array<{ key: AdminView; label: string; badge?: number }> = [
+    { key: 'dashboard',     label: '📊 Overview' },
+    { key: 'failed-quotes', label: '🚨 Failed Quotes', badge: failedCount },
+    { key: 'sessions',      label: '📋 Sessions' },
+    { key: 'companies',     label: '🏢 Companies' },
+    { key: 'quotes',        label: '📄 Quotes' },
+    { key: 'ai-costs',      label: '🤖 AI Costs' },
   ];
 
   return (
@@ -69,7 +85,12 @@ export default function AdminDashboard({ token, onBack, onCompanies, onUsers }: 
           {nav.map(n => (
             <button key={n.key} style={{ ...s.navBtn, ...(view === n.key ? s.navActive : {}) }}
               onClick={() => setView(n.key)}>
-              {n.label}
+              <span>{n.label}</span>
+              {n.badge != null && n.badge > 0 && (
+                <span style={{ marginLeft: 6, background: '#dc2626', color: '#fff', borderRadius: 10, padding: '1px 7px', fontSize: 11, fontWeight: 700 }}>
+                  {n.badge}
+                </span>
+              )}
             </button>
           ))}
         </nav>
@@ -82,10 +103,11 @@ export default function AdminDashboard({ token, onBack, onCompanies, onUsers }: 
             analytics?.overview ? <OverviewPanel a={analytics} /> :
             <div style={s.empty}>No analytics data yet.{!error && ' (Database may not be connected.)'}</div>
           )}
-          {view === 'sessions'  && <SessionsPanel  token={token} />}
-          {view === 'companies' && <CompaniesPanel token={token} />}
-          {view === 'quotes'    && <QuotesPanel    token={token} />}
-          {view === 'ai-costs'  && <AiCostsPanel   token={token} />}
+          {view === 'sessions'      && <SessionsPanel     token={token} />}
+          {view === 'companies'     && <CompaniesPanel    token={token} />}
+          {view === 'quotes'        && <QuotesPanel       token={token} />}
+          {view === 'ai-costs'      && <AiCostsPanel      token={token} />}
+          {view === 'failed-quotes' && <FailedQuotesPanel token={token} onResolved={loadFailedCount} />}
         </main>
       </div>
     </div>
@@ -531,6 +553,216 @@ const ac: Record<string, React.CSSProperties> = {
   miniBarTrack:  { height: 6, background: '#f0f4f8', borderRadius: 3, overflow: 'hidden' },
   miniBarFill:   { height: '100%', background: '#1a56db', borderRadius: 3, transition: 'width 0.3s' },
   insTag:        { background: '#dbeafe', color: '#1e40af', fontSize: 11, fontWeight: 600, padding: '2px 6px', borderRadius: 4 },
+};
+
+// ── Failed Quotes Panel (manual handoff for portal failures) ─────────────
+
+interface FailedQuote {
+  id: string; session_id: string; user_id: string;
+  portal_id: string; portal_name: string; ins_type: string;
+  reg_number: string | null; vehicle_make: string | null; vehicle_model: string | null;
+  premium: number | null; idv: number | null;
+  quote_data: { errorMessage?: string; [key: string]: unknown };
+  created_at: string;
+  user_email?: string;
+}
+
+const PORTAL_URLS: Record<string, string> = {
+  uiic: 'https://www.uiic.in/GCWebPortal/login/LoginAction.do?p=login',
+};
+
+function FailedQuotesPanel({ token, onResolved }: { token: string; onResolved: () => void }) {
+  const [items, setItems]       = useState<FailedQuote[]>([]);
+  const [loading, setLoading]   = useState(true);
+  const [error, setError]       = useState('');
+  const [taking, setTaking]     = useState<FailedQuote | null>(null);
+
+  async function load() {
+    setLoading(true); setError('');
+    try {
+      const res  = await fetch(`${autoBase}/api/admin/failed-quotes`, { headers: { Authorization: `Bearer ${token}` } });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.message);
+      setItems(data.failures ?? []);
+    } catch (e: any) { setError(e.message); }
+    finally { setLoading(false); }
+  }
+
+  useEffect(() => { load(); }, []);
+
+  async function dismiss(id: string) {
+    if (!confirm('Dismiss this failed quote without entering a premium?')) return;
+    const res  = await fetch(`${autoBase}/api/admin/quotes/${id}/dismiss`, {
+      method: 'POST', headers: { Authorization: `Bearer ${token}` },
+    });
+    if ((await res.json()).success) { load(); onResolved(); }
+  }
+
+  if (loading) return <div style={s.empty}>Loading failed quotes…</div>;
+  if (error)   return <div style={{ ...s.error, marginTop: 0 }}>{error}</div>;
+
+  return (
+    <div>
+      <div style={{ background: '#fef3c7', border: '1px solid #fde68a', color: '#92400e', padding: '12px 16px', borderRadius: 8, marginBottom: 16, fontSize: 13, lineHeight: 1.5 }}>
+        <b>What is this?</b> Portal automation failed for these quotes (login lockout, bot detection, captcha misread, etc.).
+        Open the portal yourself, complete the quote manually, then click <b>Take Over</b> and enter the premium you got.
+        The quote will be saved as if the automation had succeeded.
+      </div>
+
+      {items.length === 0 ? (
+        <div style={{ ...s.empty, textAlign: 'center' }}>
+          ✅ No failed quotes — all portal attempts in the last 7 days succeeded.
+        </div>
+      ) : (
+        <table style={ov.table}>
+          <thead><tr>
+            {['When', 'User', 'Insurer', 'Vehicle', 'Error', 'Action'].map(h => <th key={h} style={ov.th}>{h}</th>)}
+          </tr></thead>
+          <tbody>
+            {items.map(q => (
+              <tr key={q.id} style={ov.tr}>
+                <td style={{ ...ov.td, fontSize: 12, color: '#475569' }}>
+                  {new Date(q.created_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                </td>
+                <td style={{ ...ov.td, fontSize: 12 }}>{q.user_email ?? q.user_id.slice(0, 8)}</td>
+                <td style={ov.td}><span style={fq.insBadge}>{q.portal_id.toUpperCase()}</span></td>
+                <td style={{ ...ov.td, fontSize: 12 }}>
+                  <div style={{ fontWeight: 600 }}>{q.reg_number ?? '—'}</div>
+                  <div style={{ color: '#64748b' }}>{[q.vehicle_make, q.vehicle_model].filter(Boolean).join(' ') || '—'}</div>
+                </td>
+                <td style={{ ...ov.td, fontSize: 11, color: '#dc2626', maxWidth: 280 }}>
+                  {(q.quote_data?.errorMessage as string ?? '').split('\n')[0].slice(0, 100)}
+                </td>
+                <td style={ov.td}>
+                  <button style={fq.takeBtn} onClick={() => setTaking(q)}>🛠 Take Over</button>
+                  <button style={fq.dismissBtn} onClick={() => dismiss(q.id)}>✕</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {taking && (
+        <TakeOverModal
+          token={token}
+          quote={taking}
+          portalUrl={PORTAL_URLS[taking.portal_id] ?? ''}
+          onClose={() => setTaking(null)}
+          onSaved={() => { setTaking(null); load(); onResolved(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function TakeOverModal({ token, quote, portalUrl, onClose, onSaved }: {
+  token: string; quote: FailedQuote; portalUrl: string;
+  onClose: () => void; onSaved: () => void;
+}) {
+  const [premium, setPremium] = useState('');
+  const [idv, setIdv]         = useState('');
+  const [notes, setNotes]     = useState('');
+  const [submitting, setSub]  = useState(false);
+  const [err, setErr]         = useState('');
+
+  async function submit() {
+    const p = parseFloat(premium);
+    if (!p || p <= 0) { setErr('Enter a valid premium amount'); return; }
+    setSub(true); setErr('');
+    try {
+      const res  = await fetch(`${autoBase}/api/admin/quotes/${quote.id}/manual-entry`, {
+        method:  'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ premium: p, idv: idv ? parseFloat(idv) : undefined, notes: notes || undefined }),
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.message);
+      onSaved();
+    } catch (e: any) { setErr(e.message); }
+    finally { setSub(false); }
+  }
+
+  return (
+    <div style={fq.modalBackdrop} onClick={onClose}>
+      <div style={fq.modal} onClick={e => e.stopPropagation()}>
+        <div style={fq.modalHeader}>
+          <div style={{ fontWeight: 700, fontSize: 18 }}>🛠 Take Over — {quote.portal_id.toUpperCase()}</div>
+          <button style={fq.closeBtn} onClick={onClose}>✕</button>
+        </div>
+
+        <div style={fq.modalBody}>
+          <div style={fq.vehicleCard}>
+            <div style={{ fontSize: 12, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.5 }}>Vehicle</div>
+            <div style={{ fontWeight: 700, fontSize: 16, marginTop: 4 }}>{quote.reg_number ?? '—'}</div>
+            <div style={{ color: '#475569', fontSize: 13 }}>
+              {[quote.vehicle_make, quote.vehicle_model].filter(Boolean).join(' ') || '—'} · {quote.ins_type}
+            </div>
+          </div>
+
+          <ol style={fq.steps}>
+            <li>
+              <b>Open the portal in your own browser</b> and log in manually:
+              {portalUrl && (
+                <a href={portalUrl} target="_blank" rel="noreferrer" style={fq.portalLink}>
+                  ↗ Open {quote.portal_id.toUpperCase()}
+                </a>
+              )}
+            </li>
+            <li>Run the quote there using the vehicle details above.</li>
+            <li>When the portal shows the premium, type it below and click Save.</li>
+          </ol>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div>
+              <label style={fq.label}>Premium (₹) *</label>
+              <input style={fq.input} value={premium} onChange={e => setPremium(e.target.value)}
+                placeholder="e.g. 4582.50" inputMode="decimal" autoFocus />
+            </div>
+            <div>
+              <label style={fq.label}>IDV (₹)</label>
+              <input style={fq.input} value={idv} onChange={e => setIdv(e.target.value)}
+                placeholder="optional" inputMode="decimal" />
+            </div>
+          </div>
+
+          <div style={{ marginTop: 12 }}>
+            <label style={fq.label}>Notes (optional)</label>
+            <textarea style={{ ...fq.input, minHeight: 60, fontFamily: 'inherit' }}
+              value={notes} onChange={e => setNotes(e.target.value)}
+              placeholder="Any context — e.g. add-ons selected, why automation failed…" />
+          </div>
+
+          {err && <div style={{ ...s.error, marginTop: 12 }}>{err}</div>}
+
+          <div style={{ display: 'flex', gap: 8, marginTop: 16, justifyContent: 'flex-end' }}>
+            <button style={fq.cancelBtn} onClick={onClose}>Cancel</button>
+            <button style={fq.saveBtn} onClick={submit} disabled={submitting}>
+              {submitting ? 'Saving…' : '✓ Save Premium'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const fq: Record<string, React.CSSProperties> = {
+  insBadge:      { background: '#dbeafe', color: '#1e40af', fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 4 },
+  takeBtn:       { background: '#1a56db', color: '#fff', border: 'none', borderRadius: 6, padding: '6px 12px', fontSize: 12, fontWeight: 600, cursor: 'pointer', marginRight: 6 },
+  dismissBtn:    { background: '#f1f5f9', color: '#64748b', border: '1px solid #e2e8f0', borderRadius: 6, padding: '6px 10px', fontSize: 12, cursor: 'pointer' },
+  modalBackdrop: { position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 999, padding: 16 },
+  modal:         { background: '#fff', borderRadius: 14, width: '100%', maxWidth: 520, boxShadow: '0 20px 60px rgba(0,0,0,0.3)', display: 'flex', flexDirection: 'column', maxHeight: '90vh', overflow: 'hidden' },
+  modalHeader:   { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 20px', borderBottom: '1px solid #e2e8f0' },
+  modalBody:     { padding: 20, overflowY: 'auto' },
+  closeBtn:      { background: 'transparent', border: 'none', fontSize: 20, color: '#64748b', cursor: 'pointer' },
+  vehicleCard:   { background: '#f1f5f9', borderRadius: 8, padding: '12px 14px', marginBottom: 16 },
+  steps:         { paddingLeft: 22, lineHeight: 1.8, color: '#374151', marginBottom: 16, fontSize: 13 },
+  portalLink:    { display: 'inline-block', marginLeft: 8, background: '#1a56db', color: '#fff', padding: '4px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600, textDecoration: 'none' },
+  label:         { display: 'block', fontSize: 12, fontWeight: 600, color: '#475569', marginBottom: 4 },
+  input:         { width: '100%', padding: '8px 12px', border: '1.5px solid #e2e8f0', borderRadius: 8, fontSize: 14, boxSizing: 'border-box' },
+  cancelBtn:     { background: '#f1f5f9', color: '#475569', border: 'none', borderRadius: 8, padding: '10px 18px', fontWeight: 600, cursor: 'pointer' },
+  saveBtn:       { background: '#059669', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 18px', fontWeight: 700, cursor: 'pointer' },
 };
 
 // ── Styles ─────────────────────────────────────────────────────────────────
