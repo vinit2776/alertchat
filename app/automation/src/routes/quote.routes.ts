@@ -88,8 +88,7 @@ router.post('/:sessionId/start', requireAuth, async (req: Request, res: Response
     // Run in parallel — one browser context per company
     const jobs = companiesStarted.map(async (company) => {
       const sessionKey = `${sessionId}:${company.id}`;
-      let acquired       = false;
-      let keptForBuyFlow = false;
+      let acquired = false;
 
       try {
         const { slotId, context } = await browserPool.acquire(sessionKey);
@@ -106,9 +105,8 @@ router.post('/:sessionId/start', requireAuth, async (req: Request, res: Response
             ? computeMotorFields(state.confirmedFields)
             : state.confirmedFields;
 
-        // Does this portal support a follow-up buy flow? If so, keep the page alive.
-        const playbook = loadPlaybook(company.id);
-        const keepAlive = !!playbook.buy_flow;
+        const playbook  = loadPlaybook(company.id);
+        const hasBuyFlow = !!playbook.buy_flow;
 
         const result = await runPlaybook(
           company.id, enrichedFields, context,
@@ -116,24 +114,29 @@ router.post('/:sessionId/start', requireAuth, async (req: Request, res: Response
           undefined,   // captchaText
           undefined,   // debugMode
           (event) => emitProgress(sessionId, event),  // SSE progress
-          keepAlive,
+          hasBuyFlow,  // extractResumeState — only when a buy_flow is configured
         );
 
-        // If the quote succeeded AND we can do a buy flow, register the pending
-        // action — keeps the page alive for the next 10 minutes.
-        if (result.success && keepAlive && result.page) {
-          registerAction({
-            sessionId,
-            portalId:   company.id,
-            portalName: playbook.name,
-            sessionKey,
-            page:       result.page,
-          });
-          keptForBuyFlow = true;
+        // If we got resume state, persist it to DB so /proceed can restart the
+        // browser even after restart / multi-instance / pool eviction.
+        if (result.success && result.resumeState) {
+          try {
+            await registerAction({
+              sessionId,
+              portalId:     company.id,
+              portalName:   playbook.name,
+              userId:       user.sub,
+              storageState: result.resumeState.storageState,
+              resumeUrl:    result.resumeState.resumeUrl,
+              quoteRef:     result.quoteRef ?? undefined,
+            });
+          } catch (err: any) {
+            console.error('[Quote] Failed to persist pending action:', err.message);
+          }
         }
 
-        // Strip the page reference before returning (page is not serialisable)
-        const { page, screenshotBase64, ...clientResult } = result;
+        // Strip non-serialisable fields before returning to the HTTP client
+        const { resumeState, screenshotBase64, ...clientResult } = result;
 
         // Emit per-portal quote_complete event so the frontend can render this card NOW
         emitProgress(sessionId, {
@@ -147,8 +150,8 @@ router.post('/:sessionId/start', requireAuth, async (req: Request, res: Response
 
         return clientResult;
       } finally {
-        // Release the pool slot only if we're NOT holding it for a buy flow
-        if (acquired && !keptForBuyFlow) await browserPool.release(sessionKey);
+        // Always release the pool slot — resume state lives in DB now
+        if (acquired) await browserPool.release(sessionKey);
       }
     });
 
@@ -246,7 +249,8 @@ router.post('/:sessionId/start', requireAuth, async (req: Request, res: Response
   }
 });
 
-// POST /api/quotes/:sessionId/proceed/:portalId  — Click "Proceed to Buy" on the held page
+// POST /api/quotes/:sessionId/proceed/:portalId  — Reconstruct the post-quote
+// browser state from DB and run the buy_flow to capture the payment URL.
 router.post('/:sessionId/proceed/:portalId', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { sessionId, portalId } = req.params;
@@ -258,12 +262,16 @@ router.post('/:sessionId/proceed/:portalId', requireAuth, async (req: Request, r
       return;
     }
 
-    const action = lookupAction(sessionId, portalId);
+    const action = await lookupAction(sessionId, portalId);
     if (!action) {
       res.status(404).json({
         success: false,
         message: 'No pending action for this portal. The quote may have expired (10 min TTL). Please re-run the quote.',
       });
+      return;
+    }
+    if (action.userId !== user.sub) {
+      res.status(403).json({ success: false, message: 'Not your pending action' });
       return;
     }
 
@@ -273,41 +281,54 @@ router.post('/:sessionId/proceed/:portalId', requireAuth, async (req: Request, r
       meta: { phase: 'buy_flow_start' },
     });
 
-    const result = await runBuyFlow(
-      portalId, action.page,
-      (event) => emitProgress(sessionId, event),
-    );
+    // Acquire a fresh browser context with the persisted storage state
+    // (cookies + localStorage). Use a distinct sessionKey to allow the same
+    // session to run multiple buy flows in parallel without colliding.
+    const sessionKey = `${sessionId}:${portalId}:proceed`;
+    let acquired = false;
+    try {
+      const { context } = await browserPool.acquire(sessionKey, action.storageState);
+      acquired = true;
 
-    if (result.paymentUrl) {
-      updateAction(sessionId, portalId, {
-        paymentUrl: result.paymentUrl,
-        status:     'payment_pending',
-        quoteRef:   result.confirmationNumber ?? undefined,
+      const result = await runBuyFlow(
+        portalId, context, action.resumeUrl,
+        (event) => emitProgress(sessionId, event),
+      );
+
+      if (result.paymentUrl) {
+        await updateAction(sessionId, portalId, {
+          paymentUrl: result.paymentUrl,
+          status:     'payment_pending',
+          quoteRef:   result.confirmationNumber ?? undefined,
+        });
+      }
+
+      logEvent({
+        userId: user.sub, userEmail: user.email, sessionId, portalId,
+        action: result.paymentUrl ? 'form_step_filled' : 'form_step_failed',
+        outcome: result.paymentUrl ? 'success' : 'failure',
+        meta: { phase: 'buy_flow_complete', hasPaymentUrl: !!result.paymentUrl },
       });
+
+      res.json({
+        success:            !!result.paymentUrl,
+        paymentUrl:         result.paymentUrl,
+        confirmationNumber: result.confirmationNumber,
+        policyPdfUrl:       result.policyPdfUrl,
+        errorMessage:       result.errorMessage,
+        ...(result.errorMessage ? { screenshotBase64: result.screenshotBase64 } : {}),
+      });
+    } finally {
+      if (acquired) await browserPool.release(sessionKey);
     }
-
-    logEvent({
-      userId: user.sub, userEmail: user.email, sessionId, portalId,
-      action: result.paymentUrl ? 'form_step_filled' : 'form_step_failed',
-      outcome: result.paymentUrl ? 'success' : 'failure',
-      meta: { phase: 'buy_flow_complete', hasPaymentUrl: !!result.paymentUrl },
-    });
-
-    res.json({
-      success:            !!result.paymentUrl,
-      paymentUrl:         result.paymentUrl,
-      confirmationNumber: result.confirmationNumber,
-      policyPdfUrl:       result.policyPdfUrl,
-      errorMessage:       result.errorMessage,
-      // Keep screenshot small for client — only sent on failure for debugging
-      ...(result.errorMessage ? { screenshotBase64: result.screenshotBase64 } : {}),
-    });
   } catch (err) {
     next(err);
   }
 });
 
-// POST /api/quotes/:sessionId/release/:portalId  — Agent abandons buy flow; release the slot
+// POST /api/quotes/:sessionId/release/:portalId  — Agent abandons buy flow.
+// Pool slots aren't held anymore (resume state is in DB), so this just
+// deletes the persisted pending action.
 router.post('/:sessionId/release/:portalId', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { sessionId, portalId } = req.params;
@@ -319,12 +340,7 @@ router.post('/:sessionId/release/:portalId', requireAuth, async (req: Request, r
       return;
     }
 
-    const action = lookupAction(sessionId, portalId);
-    if (action) {
-      try { await action.page.close(); } catch { /* ignore */ }
-      await browserPool.release(action.sessionKey);
-      discardAction(sessionId, portalId);
-    }
+    await discardAction(sessionId, portalId);
     res.json({ success: true });
   } catch (err) {
     next(err);

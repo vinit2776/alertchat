@@ -207,10 +207,14 @@ export async function runPlaybook(
   captchaText?:    string,   // human-provided captcha (skip AI if set)
   debugMode?:      boolean,  // if true: save per-step screenshots + log select options
   onProgress?:     (event: ProgressEvent) => void,  // real-time step callback for SSE
-  keepAlive?:      boolean,  // if true: do NOT close the page on completion (caller keeps it)
+  extractResumeState?: boolean,  // if true: capture storage state + URL before closing page
 ): Promise<QuoteRunResult & {
   debugSteps?: Array<{ stepId: string; screenshotBase64: string; formHtml?: string }>;
-  page?:        Page;   // returned only if keepAlive — caller is responsible for closing
+  // Set only when extractResumeState=true: lets the buy flow resume in a fresh browser
+  resumeState?: {
+    storageState: unknown;  // Playwright StorageState
+    resumeUrl:    string;
+  };
 }> {
   const start      = Date.now();
   const playbook   = loadPlaybook(portalId);
@@ -598,6 +602,20 @@ export async function runPlaybook(
       data: { premium, idv },
     });
 
+    // If buy_flow is supported AND the caller asked for resume state,
+    // snapshot the session BEFORE we close the page. This lets us re-create
+    // an equivalent context later from cookies + localStorage + URL.
+    let resumeState: { storageState: unknown; resumeUrl: string } | undefined;
+    if (extractResumeState && playbook.buy_flow && page) {
+      try {
+        const storageState = await context.storageState();
+        const resumeUrl    = page.url();
+        resumeState = { storageState, resumeUrl };
+      } catch (err: any) {
+        console.warn('[Playbook] Could not extract resume state:', err.message);
+      }
+    }
+
     return {
       portalId, portalName: playbook.name,
       success: true, premium, idv, screenshotBase64, rawData,
@@ -606,8 +624,8 @@ export async function runPlaybook(
       addonZeroDep, addonEngine, addonRsa, addonPa,
       cashlessCount, quoteRef,
       supportsProceed: !!playbook.buy_flow,
-      ...(debugMode && { debugSteps }),
-      ...(keepAlive  && { page: page! }),   // caller keeps the page open
+      ...(debugMode  && { debugSteps }),
+      ...(resumeState && { resumeState }),
     };
 
   } catch (err: any) {
@@ -645,9 +663,10 @@ export async function runPlaybook(
     };
 
   } finally {
-    // Only close the page if NOT keeping it alive. If keepAlive, the caller
-    // (typically a pendingAction holder) owns the page and must close it later.
-    if (page && !keepAlive) {
+    // We always close the page now — resume state lives in DB (cookies +
+    // localStorage + URL), not in a hot Page reference. Keeping pages alive
+    // was process-local and broke on every restart.
+    if (page) {
       try { await page.close(); } catch { /* ignore */ }
     }
   }
@@ -664,15 +683,18 @@ export interface BuyFlowResult {
 }
 
 /**
- * Run the playbook's buy_flow steps on an existing page (post-quote).
- * Captures the payment URL using the configured extractor strategy.
+ * Run the playbook's buy_flow steps. Reconstructs the browser session from
+ * persisted storage state + resume URL — works even if the original quote
+ * happened on a different process or before a restart.
  *
- * Caller is responsible for closing the page after this returns.
+ * Caller provides a fresh BrowserContext and must release the pool slot
+ * after this returns. The page created here is closed before return.
  */
 export async function runBuyFlow(
-  portalId: string,
-  page:     Page,
-  onProgress?: (event: ProgressEvent) => void,
+  portalId:     string,
+  context:      BrowserContext,
+  resumeUrl:    string,
+  onProgress?:  (event: ProgressEvent) => void,
 ): Promise<BuyFlowResult> {
   const playbook = loadPlaybook(portalId);
 
@@ -687,7 +709,20 @@ export async function runBuyFlow(
   const { steps, payment_url_extractor, confirmation_number_selector, policy_pdf_link_selector } =
     playbook.buy_flow;
 
+  let page: Page | null = null;
   try {
+    onProgress?.({
+      type: 'step', portalId, portalName: playbook.name,
+      message: `→ Resuming session…`,
+      ts: Date.now(),
+    });
+
+    // Resume the quote: open new tab, navigate to the URL the quote landed on.
+    // Cookies + localStorage were restored when the BrowserContext was created.
+    page = await context.newPage();
+    page.setDefaultTimeout(30_000);
+    await page.goto(resumeUrl, { waitUntil: 'networkidle' });
+
     onProgress?.({
       type: 'step', portalId, portalName: playbook.name,
       message: `→ Generating payment link…`,
@@ -765,7 +800,9 @@ export async function runBuyFlow(
       screenshotBase64: screenshot?.toString('base64') ?? null,
     };
   } catch (err: any) {
-    const screenshot = await page.screenshot({ fullPage: false }).catch(() => null);
+    const screenshot = page
+      ? await page.screenshot({ fullPage: false }).catch(() => null)
+      : null;
     return {
       paymentUrl: null,
       confirmationNumber: null,
@@ -773,5 +810,7 @@ export async function runBuyFlow(
       errorMessage: err.message,
       screenshotBase64: screenshot?.toString('base64') ?? null,
     };
+  } finally {
+    if (page) { try { await page.close(); } catch { /* ignore */ } }
   }
 }

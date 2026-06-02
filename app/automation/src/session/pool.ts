@@ -26,7 +26,10 @@ class BrowserPool {
     return this.browser;
   }
 
-  async acquire(sessionKey: string): Promise<{ slotId: number; context: BrowserContext }> {
+  async acquire(
+    sessionKey:    string,
+    storageState?: unknown,   // optional — restore cookies + localStorage from a prior quote
+  ): Promise<{ slotId: number; context: BrowserContext }> {
     await this.releaseStale();
 
     const slot = this.slots.find(s => s.sessionKey === null);
@@ -38,6 +41,8 @@ class BrowserPool {
       userAgent:   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
       locale:      'en-IN',
       timezoneId:  'Asia/Kolkata',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ...(storageState ? { storageState: storageState as any } : {}),
     });
 
     slot.context    = context;

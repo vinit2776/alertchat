@@ -84,7 +84,7 @@ const server = app.listen(config.port, async () => {
 
   // Start background sweepers — keep memory bounded over long uptimes
   startSessionSweeper();
-  startPendingActionsSweeper((sessionKey) => browserPool.release(sessionKey));
+  startPendingActionsSweeper();   // DB-backed now — no in-process state to release
 });
 
 let shuttingDown = false;
