@@ -268,13 +268,20 @@ export async function runPlaybook(
     // that keep long-poll connections open, eventually closing the page context.
     await page.goto(loginUrl, { waitUntil: 'load', timeout: 30_000 });
 
-    // Dismiss any announcement modals / PWA prompts that block the form
+    // Dismiss any announcement modals / PWA prompts that block the form.
+    // Short 1s timeout per selector — if the page navigates during this loop
+    // (some portals redirect after load), bail out gracefully.
     if (playbook.login.dismiss_modals?.length) {
       for (const sel of playbook.login.dismiss_modals) {
-        await page.locator(sel).first().click({ timeout: 5_000 }).catch(() => {
-          // Modal may not have appeared — that's fine, continue
-        });
-        await page.waitForTimeout(300);
+        try {
+          await page.locator(sel).first().click({ timeout: 1_000 });
+          await page.waitForTimeout(200);
+        } catch {
+          // Not found or page navigated — fine, move on
+        }
+        // Stop trying to dismiss if the page is gone
+        if (!page.isClosed()) continue;
+        break;
       }
     }
 
