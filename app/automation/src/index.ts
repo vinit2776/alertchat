@@ -19,8 +19,14 @@ import { getLangfuseTracerProvider, tracingEnabled } from './ai/langfuse-client'
 
 const app = express();
 
-const corsOrigin = config.nodeEnv === 'development' ? '*' : config.frontendUrl;
-app.use(cors({ origin: corsOrigin, credentials: config.nodeEnv !== 'development' }));
+// Support comma-separated list in FRONTEND_URL so Vercel + Railway can both connect
+const allowedOrigins = config.nodeEnv === 'development'
+  ? true  // allow any origin in dev
+  : config.frontendUrl.split(',').map(u => u.trim()).filter(Boolean);
+app.use(cors({
+  origin: allowedOrigins,
+  credentials: config.nodeEnv !== 'development',
+}));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
