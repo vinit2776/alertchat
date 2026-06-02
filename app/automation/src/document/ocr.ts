@@ -6,7 +6,7 @@ import { getLangfuse } from '../ai/langfuse-client';
 
 let _client: Anthropic | null = null;
 function getClient(): Anthropic {
-  if (!_client) _client = new Anthropic({ apiKey: config.anthropicApiKey });
+  if (!_client) _client = new Anthropic(config.anthropicApiKey ? { apiKey: config.anthropicApiKey } : {});
   return _client;
 }
 

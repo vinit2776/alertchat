@@ -2,6 +2,17 @@
 
 export type InsuranceType = 'motor' | 'health' | 'property' | 'travel';
 
+// ── Knowledge engine ───────────────────────────────────────────────────────
+
+export interface GapField {
+  key:             string;
+  label:           string;
+  question:        string;
+  type:            string;
+  allowed_values?: string[];
+  optional?:       boolean;
+}
+
 // ── Document OCR ───────────────────────────────────────────────────────────
 
 export type DocumentType = 'RC' | 'PAN' | 'AADHAAR' | 'DRIVING_LICENCE' | 'POLICY' | 'OTHER';

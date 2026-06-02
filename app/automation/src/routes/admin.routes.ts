@@ -22,7 +22,7 @@ import * as path from 'path';
 
 let _ai: Anthropic | null = null;
 function getAI() {
-  if (!_ai) _ai = new Anthropic({ apiKey: config.anthropicApiKey });
+  if (!_ai) _ai = new Anthropic(config.anthropicApiKey ? { apiKey: config.anthropicApiKey } : {});
   return _ai;
 }
 

@@ -13,6 +13,12 @@ export const config = {
 
   anthropicApiKey: process.env.ANTHROPIC_API_KEY || '',
 
+  langfuse: {
+    publicKey: process.env.LANGFUSE_PUBLIC_KEY || '',
+    secretKey: process.env.LANGFUSE_SECRET_KEY || '',
+    baseUrl:   process.env.LANGFUSE_BASE_URL || 'https://cloud.langfuse.com',
+  },
+
   aws: {
     region:          process.env.AWS_REGION || 'ap-south-1',
     accessKeyId:     process.env.AWS_ACCESS_KEY_ID || '',

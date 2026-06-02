@@ -1,0 +1,140 @@
+{
+  "insurer_id": "uiic",
+  "version": 1,
+  "insurance_type": "motor",
+  "vehicle_subtypes": ["private_car", "two_wheeler"],
+  "_note": "Fields needed by the UIIC Motor Premium Calculator. Computed fields are derived by field-computer.ts — never ask for those. Source priority: 'rc' = RC OCR, 'policy' = prior policy OCR, 'chat' = conversation answer.",
+
+  "required_fields": [
+    {
+      "key": "registration_number",
+      "label": "Registration Number",
+      "source_priority": ["rc", "policy", "chat"],
+      "type": "string",
+      "pattern": "^[A-Z]{2}[0-9]{2}",
+      "ask_question": "What is the vehicle registration number? (e.g. TN07AB1234)",
+      "purpose": "Needed to determine Zone-A/B for premium rating. Also identifies the vehicle."
+    },
+    {
+      "key": "registration_date",
+      "label": "Date of Registration",
+      "source_priority": ["rc", "chat"],
+      "type": "date",
+      "ask_question": "What is the date of registration on the RC? (DD/MM/YYYY)",
+      "fallback_from": "manufacturing_year",
+      "purpose": "Portal field: dateOfPurchaseString. Determines vehicle age and depreciation band."
+    },
+    {
+      "key": "cubic_capacity",
+      "label": "Engine Cubic Capacity (CC)",
+      "source_priority": ["rc", "chat"],
+      "type": "number",
+      "ask_question": "What is the engine CC? (Visible on the RC — e.g. 1197, 998, 1498)",
+      "fallback": "1500",
+      "purpose": "Used to compute the CC band option value for the portal dropdown."
+    },
+    {
+      "key": "vehicle_class",
+      "label": "Vehicle Class",
+      "source_priority": ["rc", "chat"],
+      "type": "string",
+      "ask_question": "Is this a private car or a two-wheeler (motorcycle/scooter)?",
+      "fallback": "Motor Car",
+      "purpose": "Determines whether to select Private Car (18) or Motorcycle/Scooter (3) in the portal."
+    },
+    {
+      "key": "fuel_type",
+      "label": "Fuel Type",
+      "source_priority": ["rc", "chat"],
+      "type": "string",
+      "ask_question": "What is the fuel type — Petrol, Diesel, CNG, or Electric?",
+      "fallback": "Petrol",
+      "purpose": "Electric vehicles are excluded by UIIC. Also determines CC band vs KW band."
+    },
+    {
+      "key": "ncb_percentage",
+      "label": "NCB Percentage",
+      "source_priority": ["policy", "chat"],
+      "type": "enum",
+      "allowed_values": ["0", "20", "25", "35", "45", "50"],
+      "ask_question": "What is the NCB (No Claim Bonus) from the previous policy? Typical values: 0%, 20%, 25%, 35%, 45%, 50%. Enter 0 if this is a new vehicle or no prior policy.",
+      "default_if_new_vehicle": "0",
+      "purpose": "Direct portal input. Reduces OD premium. 0% for new vehicles."
+    },
+    {
+      "key": "previous_policy_expiry",
+      "label": "Previous Policy Expiry Date",
+      "source_priority": ["policy", "chat"],
+      "type": "date",
+      "ask_question": "When does the current insurance policy expire? (DD/MM/YYYY) — this sets the new policy start date.",
+      "optional": true,
+      "skip_condition": "ncb_percentage == '0' && business_type == 'New'",
+      "purpose": "Risk start date = day after expiry. If missing, risk start = today."
+    }
+  ],
+
+  "computed_fields": [
+    {
+      "key": "vehicle_type_code",
+      "depends_on": ["vehicle_class"],
+      "fn": "vehicle_class_to_type_code",
+      "_note": "18 = Private Car, 3 = Motorcycle/Scooter"
+    },
+    {
+      "key": "cc_band",
+      "depends_on": ["cubic_capacity", "fuel_type", "vehicle_type_code"],
+      "fn": "cc_to_band",
+      "_note": "Car: 1000/1500/2000. Two-wheeler: 70/150/350/400. EV: 3/7/16/30/65/100 (KW)"
+    },
+    {
+      "key": "vehicle_zone",
+      "depends_on": ["registration_number"],
+      "fn": "rto_to_zone",
+      "_note": "Zone-A = major metros, Zone-B = all others"
+    },
+    {
+      "key": "business_type",
+      "depends_on": ["previous_policy_expiry", "ncb_percentage"],
+      "fn": "derive_business_type",
+      "_note": "New if no prior policy, Renewal otherwise"
+    },
+    {
+      "key": "risk_start_date",
+      "depends_on": ["previous_policy_expiry"],
+      "fn": "next_day_or_today",
+      "_note": "DD/MM/YYYY. One day after expiry, or today if no prior policy."
+    },
+    {
+      "key": "is_electric",
+      "depends_on": ["fuel_type"],
+      "fn": "detect_electric"
+    }
+  ],
+
+  "optional_fields": [
+    {
+      "key": "idv",
+      "label": "IDV (Insured Declared Value in ₹)",
+      "source_priority": ["chat"],
+      "type": "number",
+      "ask_question": "Would you like to set a custom IDV (₹)? If not, we'll auto-calculate a fair market estimate.",
+      "purpose": "Sets the maximum claim payout. Auto-computed from IRDAI depreciation if not provided."
+    },
+    {
+      "key": "od_discount",
+      "label": "OD Discount %",
+      "source_priority": ["chat"],
+      "type": "number",
+      "ask_question": "Is any OD discount applicable? (Enter percentage, e.g. 5)",
+      "purpose": "Optional own-damage discount applied before final premium."
+    }
+  ],
+
+  "excluded_conditions": [
+    {
+      "field": "fuel_type",
+      "value_pattern": "electric|\\bev\\b|battery",
+      "message": "UIIC's motor premium calculator does not support electric vehicles — their GI catalogue does not have EV manufacturer/model codes. Please select HDFC ERGO or Bajaj Allianz for an EV quote."
+    }
+  ]
+}
