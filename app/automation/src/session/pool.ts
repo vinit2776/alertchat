@@ -75,10 +75,12 @@ class BrowserPool {
       (window as any).chrome = { runtime: {} };
     });
 
-    // Block only large media types (video/audio) — images/fonts left alone
-    // since some portals check for loaded images before showing login forms
+    // Block images, fonts and media to keep Chromium within Railway's RAM budget.
+    // Some portals' JS checks for loaded images — those are handled by allowing
+    // the request to fail gracefully (abort returns a network error, not a 4xx).
     await context.route('**/*', route => {
-      if (route.request().resourceType() === 'media') {
+      const type = route.request().resourceType();
+      if (type === 'image' || type === 'font' || type === 'media') {
         route.abort();
       } else {
         route.continue();

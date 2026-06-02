@@ -267,6 +267,7 @@ export async function runPlaybook(
     // Use 'load' rather than 'networkidle' — 'networkidle' can hang on portals
     // that keep long-poll connections open, eventually closing the page context.
     await page.goto(loginUrl, { waitUntil: 'load', timeout: 30_000 });
+    console.log(`[login] Navigated to: ${page.url()} | closed: ${page.isClosed()}`);
 
     // Dismiss any announcement modals / PWA prompts that block the form.
     // Short 1s timeout per selector — if the page navigates during this loop
@@ -285,6 +286,7 @@ export async function runPlaybook(
       }
     }
 
+    console.log(`[login] After modals: url=${page.isClosed() ? 'CLOSED' : page.url()}`);
     // If the page navigated away during modal dismiss (some portals redirect),
     // navigate back to the login URL before trying to fill credentials.
     if (page.isClosed() || !page.url().includes(playbook.base_url.replace(/^https?:\/\//, ''))) {
