@@ -264,9 +264,9 @@ export async function runPlaybook(
 
     // ── Login ──────────────────────────────────────────────────────────────
     const loginUrl = playbook.base_url.replace(/\/$/, '') + playbook.login.url;
-    // Use 'load' rather than 'networkidle' — 'networkidle' can hang on portals
-    // that keep long-poll connections open, eventually closing the page context.
-    await page.goto(loginUrl, { waitUntil: 'load', timeout: 30_000 });
+    // 'networkidle' with image blocking is safe — aborted requests resolve immediately
+    // so networkidle fires quickly once JS/CSS finish loading.
+    await page.goto(loginUrl, { waitUntil: 'networkidle', timeout: 45_000 });
     console.log(`[login] Navigated to: ${page.url()} | closed: ${page.isClosed()}`);
 
     // Dismiss any announcement modals / PWA prompts that block the form.
