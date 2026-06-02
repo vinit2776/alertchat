@@ -20,7 +20,15 @@ class BrowserPool {
     if (!this.browser || !this.browser.isConnected()) {
       this.browser = await chromium.launch({
         headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          // Anti-bot detection: remove the Automation/HeadlessChrome markers
+          '--disable-blink-features=AutomationControlled',
+          '--disable-automation',
+          '--exclude-switches=enable-automation',
+        ],
       });
     }
     return this.browser;
@@ -38,11 +46,19 @@ class BrowserPool {
     const browser  = await this.getBrowser();
     const context  = await browser.newContext({
       viewport:    { width: 1280, height: 800 },
-      userAgent:   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      // Match the actual Playwright-bundled Chromium version to avoid mismatch detection
+      userAgent:   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
       locale:      'en-IN',
       timezoneId:  'Asia/Kolkata',
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ...(storageState ? { storageState: storageState as any } : {}),
+    });
+
+    // Spoof navigator.webdriver = undefined so bot-detection scripts see a normal browser
+    await context.addInitScript(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (window as any).chrome = { runtime: {} };
     });
 
     slot.context    = context;
