@@ -24,10 +24,8 @@ class BrowserPool {
           '--no-sandbox',
           '--disable-setuid-sandbox',
           '--disable-dev-shm-usage',
-          // Anti-bot detection: remove the Automation/HeadlessChrome markers
+          // Removes the "AutomationControlled" feature flag that portals detect
           '--disable-blink-features=AutomationControlled',
-          '--disable-automation',
-          '--exclude-switches=enable-automation',
         ],
       });
     }
