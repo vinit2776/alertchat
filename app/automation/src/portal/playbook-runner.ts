@@ -263,7 +263,15 @@ export async function runPlaybook(
     page.setDefaultTimeout(30_000);
 
     // ── Login ──────────────────────────────────────────────────────────────
-    const loginUrl = playbook.base_url.replace(/\/$/, '') + playbook.login.url;
+    const baseUrl  = playbook.base_url.replace(/\/$/, '');
+    const loginUrl = baseUrl + playbook.login.url;
+
+    // Pre-warm: visit the portal home page first so the server sets its
+    // session cookie. Many portals (including UIIC) return a blank page when
+    // the login URL is hit without a prior session cookie.
+    await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 20_000 }).catch(() => {});
+    await page.waitForTimeout(1_000);
+
     await page.goto(loginUrl, { waitUntil: 'networkidle' });
 
     // Dismiss any announcement modals / PWA prompts that block the form
