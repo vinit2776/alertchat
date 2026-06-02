@@ -2,6 +2,7 @@ import sharp from 'sharp';
 import Anthropic from '@anthropic-ai/sdk';
 import { config } from '../config/env';
 import { DocumentType, ExtractedDocument } from '../types';
+import { startActiveObservation, startObservation, propagateAttributes } from '../ai/langfuse-client';
 
 let _client: Anthropic | null = null;
 function getClient(): Anthropic {
@@ -110,58 +111,82 @@ export async function extractDocument(
 ): Promise<ExtractedDocument> {
   const docBlock = await toAnthropicBlock(fileBuffer, mimeType);
 
-  // Use Sonnet — it's significantly better at multi-page policy schedules
-  // and complex tabular extraction. The forced tool call guarantees we get
-  // structured output (no JSON-parsing failures).
-  const response = await getClient().messages.create({
-    model:       'claude-sonnet-4-5',
-    max_tokens:  2048,
-    tools:       [EXTRACT_TOOL],
-    tool_choice: { type: 'tool', name: 'extract_fields' },
-    messages: [
-      {
-        role: 'user',
-        content: [
-          docBlock as any,
-          { type: 'text', text: EXTRACT_PROMPT },
+  const OCR_MODEL = 'claude-sonnet-4-5';
+
+  return await startActiveObservation('ocr-extract', async (trace) => {
+    trace.update({ input: { mimeType }, metadata: { mimeType } });
+
+    return await propagateAttributes({ tags: ['ocr'] }, async () => {
+      const gen = startObservation('ocr', {
+        model:           OCR_MODEL,
+        input:           { prompt: EXTRACT_PROMPT, mimeType },
+        modelParameters: { max_tokens: 2048 },
+      }, { asType: 'generation' });
+
+      // Use Sonnet — it's significantly better at multi-page policy schedules
+      // and complex tabular extraction. The forced tool call guarantees we get
+      // structured output (no JSON-parsing failures).
+      const response = await getClient().messages.create({
+        model:       OCR_MODEL,
+        max_tokens:  2048,
+        tools:       [EXTRACT_TOOL],
+        tool_choice: { type: 'tool', name: 'extract_fields' },
+        messages: [
+          {
+            role: 'user',
+            content: [
+              docBlock as any,
+              { type: 'text', text: EXTRACT_PROMPT },
+            ],
+          },
         ],
-      },
-    ],
-  });
+      });
 
   const toolUse = response.content.find(
     (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use',
   );
 
-  if (!toolUse) {
-    const rawText = response.content.find(b => b.type === 'text')?.text ?? '';
-    console.error('[OCR] Claude did not call the tool. Raw response:');
-    console.error(rawText.slice(0, 1000));
-    throw new Error('Document could not be read. Please retake the photo in good lighting and try again.');
-  }
+      if (!toolUse) {
+        const rawText = response.content.find(b => b.type === 'text')?.text ?? '';
+        gen.update({ output: rawText, level: 'ERROR' }).end();
+        console.error('[OCR] Claude did not call the tool. Raw response:');
+        console.error(rawText.slice(0, 1000));
+        throw new Error('Document could not be read. Please retake the photo in good lighting and try again.');
+      }
 
-  const parsed = toolUse.input as {
-    docType:     DocumentType;
-    confidence:  number;
-    fields:      Record<string, string>;
-    rawText?:    string;
-  };
+      const parsed = toolUse.input as {
+        docType:     DocumentType;
+        confidence:  number;
+        fields:      Record<string, string>;
+        rawText?:    string;
+      };
 
-  const confidence: number = typeof parsed.confidence === 'number' ? parsed.confidence : 0;
+      const confidence: number = typeof parsed.confidence === 'number' ? parsed.confidence : 0;
+      const fieldCount = Object.keys(parsed.fields ?? {}).length;
 
-  if (confidence < MIN_CONFIDENCE) {
-    throw new Error(
-      `Image quality too low to read reliably (${Math.round(confidence * 100)}% confidence). ` +
-      'Please retake the photo in good lighting, keep the document flat, and ensure all text is in focus.'
-    );
-  }
+      gen.update({
+        output:       { docType: parsed.docType, confidence, fieldCount },
+        usageDetails: { input: response.usage.input_tokens, output: response.usage.output_tokens },
+        level:        confidence < MIN_CONFIDENCE ? 'WARNING' : 'DEFAULT',
+      }).end();
 
-  return {
-    docType:    (parsed.docType as DocumentType) ?? 'OTHER',
-    fields:     (parsed.fields as Record<string, string>) ?? {},
-    confidence,
-    rawText:    typeof parsed.rawText === 'string' ? parsed.rawText : '',
-  };
+      trace.update({ output: { docType: parsed.docType, confidence, fieldCount } });
+
+      if (confidence < MIN_CONFIDENCE) {
+        throw new Error(
+          `Image quality too low to read reliably (${Math.round(confidence * 100)}% confidence). ` +
+          'Please retake the photo in good lighting, keep the document flat, and ensure all text is in focus.'
+        );
+      }
+
+      return {
+        docType:  (parsed.docType as DocumentType) ?? 'OTHER',
+        fields:   (parsed.fields as Record<string, string>) ?? {},
+        confidence,
+        rawText:  typeof parsed.rawText === 'string' ? parsed.rawText : '',
+      };
+    });
+  });
 }
 
 // Minimum confidence to accept — anything below this rejects the image

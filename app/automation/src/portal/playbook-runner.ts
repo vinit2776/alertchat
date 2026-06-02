@@ -6,6 +6,7 @@ import { logEvent } from '../audit/logger';
 import { getCredentials } from '../credentials/vault';
 import { config } from '../config/env';
 import type { ProgressEvent } from '../session/progress';
+import { startObservation, propagateAttributes } from '../ai/langfuse-client';
 
 let _anthropic: Anthropic | null = null;
 function getAI(): Anthropic {
@@ -169,30 +170,47 @@ export class CaptchaRequiredError extends Error {
 // ── Captcha solver ────────────────────────────────────────────────────────
 
 async function solveCaptcha(page: Page, imgSelector: string): Promise<string> {
-  const el = page.locator(imgSelector).first();
+  const el  = page.locator(imgSelector).first();
   const buf = await el.screenshot();
 
-  const response = await getAI().messages.create({
-    model:      'claude-haiku-4-5-20251001',
-    max_tokens: 32,
-    messages: [{
-      role:    'user',
-      content: [{
-        type:   'image',
-        source: { type: 'base64', media_type: 'image/png', data: buf.toString('base64') },
-      }, {
-        type: 'text',
-        text: 'This is a CAPTCHA image from an insurance portal login page. Read the characters shown and return ONLY the captcha text, no other words.',
-      }],
-    }],
-  });
+  const CAPTCHA_MODEL = 'claude-haiku-4-5-20251001';
 
-  // Strip whitespace — AI sometimes adds spaces between characters
-  const text = (response.content.find(b => b.type === 'text')?.text ?? '')
-    .trim()
-    .replace(/\s+/g, '');
-  console.log(`[Captcha] Solved: "${text}"`);
-  return text;
+  return await propagateAttributes({ tags: ['captcha'] }, async () => {
+    const gen = startObservation('captcha-solve', {
+      model:           CAPTCHA_MODEL,
+      input:           'captcha image',
+      modelParameters: { max_tokens: 32 },
+    }, { asType: 'generation' });
+
+    const response = await getAI().messages.create({
+      model:      CAPTCHA_MODEL,
+      max_tokens: 32,
+      messages: [{
+        role:    'user',
+        content: [{
+          type:   'image',
+          source: { type: 'base64', media_type: 'image/png', data: buf.toString('base64') },
+        }, {
+          type: 'text',
+          text: 'This is a CAPTCHA image from an insurance portal login page. Read the characters shown and return ONLY the captcha text, no other words.',
+        }],
+      }],
+    });
+
+    // Strip whitespace — AI sometimes adds spaces between characters
+    const text = (response.content.find(b => b.type === 'text')?.text ?? '')
+      .trim()
+      .replace(/\s+/g, '');
+
+    // Captcha text intentionally hidden from traces — do not log the raw value
+    gen.update({
+      output:       '(redacted)',
+      usageDetails: { input: response.usage.input_tokens, output: response.usage.output_tokens },
+    }).end();
+
+    console.log(`[Captcha] Solved: "${text}"`);
+    return text;
+  });
 }
 
 // ── Main runner ────────────────────────────────────────────────────────────

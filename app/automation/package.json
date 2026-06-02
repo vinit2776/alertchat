@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.99.0",
+    "@langfuse/tracing": "^5.4.1",
     "@playwright/browser-chromium": "^1.60.0",
     "axios": "^1.7.2",
     "bcryptjs": "^2.4.3",
@@ -19,6 +20,7 @@
     "express": "^4.19.2",
     "express-rate-limit": "^8.5.2",
     "jsonwebtoken": "^9.0.2",
+    "langfuse": "^3.38.20",
     "multer": "^1.4.5-lts.1",
     "pg": "^8.12.0",
     "playwright": "^1.60.0",

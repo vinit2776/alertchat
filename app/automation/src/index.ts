@@ -15,6 +15,7 @@ import { browserPool } from './session/pool';
 import { query, queryOne, closePool } from './db/client';
 import { startSweeper as startSessionSweeper, stopSweeper as stopSessionSweeper } from './session/session-store';
 import { startPendingActionsSweeper, stopPendingActionsSweeper } from './session/pending-actions';
+import { getLangfuseTracerProvider, tracingEnabled } from './ai/langfuse-client';
 
 const app = express();
 
@@ -79,7 +80,8 @@ async function seedDefaultAdmin(): Promise<void> {
 
 const server = app.listen(config.port, async () => {
   console.log(`\n🚀 Alert Automation Service on http://localhost:${config.port}`);
-  console.log(`   ENV: ${config.nodeEnv}\n`);
+  console.log(`   ENV: ${config.nodeEnv}`);
+  console.log(`   Langfuse tracing: ${tracingEnabled ? 'enabled' : 'disabled'}\n`);
   await seedDefaultAdmin();
 
   // Start background sweepers — keep memory bounded over long uptimes
@@ -103,6 +105,9 @@ async function shutdown(signal: string) {
   const cleanup = Promise.all([
     browserPool.shutdown().catch(e => console.error('[shutdown] browserPool:', e)),
     closePool().catch(e => console.error('[shutdown] DB pool:', e)),
+    tracingEnabled
+      ? (getLangfuseTracerProvider() as any).shutdown?.().catch((e: unknown) => console.error('[shutdown] Langfuse:', e)) ?? Promise.resolve()
+      : Promise.resolve(),
   ]);
   const deadline = new Promise<void>(r => setTimeout(() => r(), 10_000));
   await Promise.race([cleanup, deadline]);
