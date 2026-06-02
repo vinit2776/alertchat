@@ -1,6 +1,6 @@
 import { Browser, BrowserContext, chromium } from 'playwright';
 
-const POOL_SIZE    = 3;  // Reduced from 15 — each Chromium context uses ~150-200MB on Railway
+const POOL_SIZE    = 1;  // One context at a time — each Chromium context uses ~200-300MB on Railway
 const SESSION_TTL  = 30 * 60 * 1000; // 30 minutes
 
 interface Slot {
@@ -38,10 +38,8 @@ class BrowserPool {
           '--no-first-run',
           '--safebrowsing-disable-auto-update',
           '--js-flags=--max-old-space-size=256',
-          // Single-process: renderer runs in browser process — saves ~100MB per context
-          '--single-process',
-          // Limit tab/renderer count
-          '--renderer-process-limit=1',
+          // Limit renderer process count
+          '--renderer-process-limit=2',
         ],
       });
     }
