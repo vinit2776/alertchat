@@ -264,7 +264,9 @@ export async function runPlaybook(
 
     // ── Login ──────────────────────────────────────────────────────────────
     const loginUrl = playbook.base_url.replace(/\/$/, '') + playbook.login.url;
-    await page.goto(loginUrl, { waitUntil: 'networkidle' });
+    // Use 'load' rather than 'networkidle' — 'networkidle' can hang on portals
+    // that keep long-poll connections open, eventually closing the page context.
+    await page.goto(loginUrl, { waitUntil: 'load', timeout: 30_000 });
 
     // Dismiss any announcement modals / PWA prompts that block the form
     if (playbook.login.dismiss_modals?.length) {
