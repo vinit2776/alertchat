@@ -1,6 +1,6 @@
 import { Browser, BrowserContext, chromium } from 'playwright';
 
-const POOL_SIZE    = 15;
+const POOL_SIZE    = 3;  // Reduced from 15 — each Chromium context uses ~150-200MB on Railway
 const SESSION_TTL  = 30 * 60 * 1000; // 30 minutes
 
 interface Slot {
@@ -24,8 +24,20 @@ class BrowserPool {
           '--no-sandbox',
           '--disable-setuid-sandbox',
           '--disable-dev-shm-usage',
-          // Removes the "AutomationControlled" feature flag that portals detect
+          // Anti-bot: hide headless markers
           '--disable-blink-features=AutomationControlled',
+          // Memory footprint reduction for Railway containers
+          '--disable-gpu',
+          '--disable-background-networking',
+          '--disable-extensions',
+          '--disable-sync',
+          '--disable-translate',
+          '--hide-scrollbars',
+          '--metrics-recording-only',
+          '--mute-audio',
+          '--no-first-run',
+          '--safebrowsing-disable-auto-update',
+          '--js-flags=--max-old-space-size=512',
         ],
       });
     }
