@@ -209,6 +209,15 @@ async function solveCaptcha(page: Page, imgSelector: string): Promise<string> {
 
 // ── Main runner ────────────────────────────────────────────────────────────
 
+/** Thrown by runPlaybook when skipLogin=true and the portal redirects back to its login form,
+ *  signalling the stored cookies have expired. Callers should ask the human for a fresh session. */
+export class SessionExpiredError extends Error {
+  constructor(public readonly portalId: string) {
+    super(`Portal session for ${portalId} has expired — please log in again`);
+    this.name = 'SessionExpiredError';
+  }
+}
+
 export async function runPlaybook(
   portalId:        string,
   confirmedFields: Record<string, string>,
@@ -220,6 +229,7 @@ export async function runPlaybook(
   debugMode?:      boolean,  // if true: save per-step screenshots + log select options
   onProgress?:     (event: ProgressEvent) => void,  // real-time step callback for SSE
   extractResumeState?: boolean,  // if true: capture storage state + URL before closing page
+  skipLogin?:      boolean,  // if true: assume context already has a logged-in session, skip login flow
 ): Promise<QuoteRunResult & {
   debugSteps?: Array<{ stepId: string; screenshotBase64: string; formHtml?: string }>;
   // Set only when extractResumeState=true: lets the buy flow resume in a fresh browser
@@ -262,95 +272,114 @@ export async function runPlaybook(
     page = await context.newPage();
     page.setDefaultTimeout(30_000);
 
-    // ── Login ──────────────────────────────────────────────────────────────
-    const loginUrl = playbook.base_url.replace(/\/$/, '') + playbook.login.url;
-    // 'networkidle' with image blocking is safe — aborted requests resolve immediately
-    // so networkidle fires quickly once JS/CSS finish loading.
-    await page.goto(loginUrl, { waitUntil: 'networkidle', timeout: 45_000 });
-    console.log(`[login] Navigated to: ${page.url()} | closed: ${page.isClosed()}`);
+    if (skipLogin) {
+      // ── Skip login: reuse human-captured session ──────────────────────────
+      // Context was created with storageState — cookies + localStorage already set.
+      // Navigate to the first quote step's URL; if portal redirects us back to login,
+      // the session has expired.
+      const firstStep = playbook.quote_flow[0];
+      const firstUrl  = firstStep?.navigate_url
+        ? playbook.base_url.replace(/\/$/, '') + firstStep.navigate_url
+        : playbook.base_url;
+      await page.goto(firstUrl, { waitUntil: 'networkidle', timeout: 45_000 });
 
-    // Dismiss any announcement modals / PWA prompts that block the form.
-    // Short 1s timeout per selector — if the page navigates during this loop
-    // (some portals redirect after load), bail out gracefully.
-    if (playbook.login.dismiss_modals?.length) {
-      for (const sel of playbook.login.dismiss_modals) {
-        try {
-          await page.locator(sel).first().click({ timeout: 1_000 });
-          await page.waitForTimeout(200);
-        } catch {
-          // Not found or page navigated — fine, move on
+      // Detect session expiry: if URL contains the login path or username field is visible,
+      // the portal kicked us back to login.
+      const sessionExpired = page.url().includes(playbook.login.url.split('?')[0])
+        || await page.locator(playbook.login.username_field).isVisible({ timeout: 2_000 }).catch(() => false);
+
+      if (sessionExpired) {
+        logEvent({
+          userId, userEmail, sessionId, portalId,
+          action: 'portal_login', outcome: 'failure',
+          meta: { reason: 'session_expired' },
+        });
+        throw new SessionExpiredError(portalId);
+      }
+
+      logEvent({
+        userId, userEmail, sessionId, portalId,
+        action: 'portal_login', outcome: 'success',
+        durationMs: Date.now() - start,
+        meta: { method: 'cookie_handoff' },
+      });
+      onProgress?.({
+        type: 'login', portalId, portalName: playbook.name,
+        message: `✓ Restored ${playbook.name} session from your browser`,
+        ts: Date.now(),
+      });
+    } else {
+      // ── Login ────────────────────────────────────────────────────────────
+      const loginUrl = playbook.base_url.replace(/\/$/, '') + playbook.login.url;
+      // 'networkidle' with image blocking is safe — aborted requests resolve immediately
+      // so networkidle fires quickly once JS/CSS finish loading.
+      await page.goto(loginUrl, { waitUntil: 'networkidle', timeout: 45_000 });
+      console.log(`[login] Navigated to: ${page.url()} | closed: ${page.isClosed()}`);
+
+      // Dismiss any announcement modals / PWA prompts that block the form.
+      if (playbook.login.dismiss_modals?.length) {
+        for (const sel of playbook.login.dismiss_modals) {
+          try {
+            await page.locator(sel).first().click({ timeout: 1_000 });
+            await page.waitForTimeout(200);
+          } catch { /* not found, fine */ }
+          if (!page.isClosed()) continue;
+          break;
         }
-        // Stop trying to dismiss if the page is gone
-        if (!page.isClosed()) continue;
-        break;
       }
-    }
 
-    console.log(`[login] After modals: url=${page.isClosed() ? 'CLOSED' : page.url()}`);
-    // If the page navigated away during modal dismiss (some portals redirect),
-    // navigate back to the login URL before trying to fill credentials.
-    if (page.isClosed() || !page.url().includes(playbook.base_url.replace(/^https?:\/\//, ''))) {
-      if (!page.isClosed()) {
-        await page.goto(loginUrl, { waitUntil: 'load', timeout: 30_000 });
+      console.log(`[login] After modals: url=${page.isClosed() ? 'CLOSED' : page.url()}`);
+      if (page.isClosed() || !page.url().includes(playbook.base_url.replace(/^https?:\/\//, ''))) {
+        if (!page.isClosed()) {
+          await page.goto(loginUrl, { waitUntil: 'load', timeout: 30_000 });
+        }
       }
-    }
 
-    const creds = await getCredentials(portalId);
+      const creds = await getCredentials(portalId);
 
-    // Wait for the username field to be visible before clicking —
-    // ensures the login form has fully rendered after any redirects.
-    await page.locator(playbook.login.username_field).waitFor({ state: 'visible', timeout: 30_000 });
+      await page.locator(playbook.login.username_field).waitFor({ state: 'visible', timeout: 30_000 });
+      await page.click(playbook.login.username_field);
+      await page.fill(playbook.login.username_field, creds.username);
+      await page.click(playbook.login.password_field);
+      await page.fill(playbook.login.password_field, creds.password);
 
-    // Click fields before filling — some portals (e.g. UIIC) have readonly="readonly"
-    // removed only on focus; Playwright's fill() doesn't trigger focus by itself.
-    await page.click(playbook.login.username_field);
-    await page.fill(playbook.login.username_field, creds.username);
-    await page.click(playbook.login.password_field);
-    await page.fill(playbook.login.password_field, creds.password);
-
-    // Solve image captcha if required by this portal.
-    // Uses human-provided captchaText if set; otherwise tries AI once (no retries).
-    if (playbook.login.captcha) {
-      const { image_selector, input_selector } = playbook.login.captcha;
-      await page.waitForSelector(image_selector, { timeout: 10_000 });
-
-      const solved = captchaText ?? await solveCaptcha(page, image_selector);
-      await page.fill(input_selector, solved);
-    }
-
-    await page.click(playbook.login.submit);
-
-    const loginOk = await page.waitForSelector(playbook.login.success_indicator, { timeout: 20_000 })
-      .then(() => true)
-      .catch(() => false);
-
-    if (!loginOk) {
       if (playbook.login.captcha) {
-        const captchaStillPresent = await page.locator(playbook.login.captcha.image_selector)
-          .isVisible({ timeout: 2_000 }).catch(() => false);
-
-        if (!captchaStillPresent) {
-          throw new Error(`Login appears successful but success_indicator "${playbook.login.success_indicator}" not found. Update the playbook.`);
-        }
-
-        // Captcha still on screen — login failed. Return image for human to read.
-        const freshBuf = await page.locator(playbook.login.captcha.image_selector).first().screenshot()
-          .catch(async () => page!.screenshot({ fullPage: false }));
-        throw new CaptchaRequiredError(freshBuf.toString('base64'));
+        const { image_selector, input_selector } = playbook.login.captcha;
+        await page.waitForSelector(image_selector, { timeout: 10_000 });
+        const solved = captchaText ?? await solveCaptcha(page, image_selector);
+        await page.fill(input_selector, solved);
       }
-      throw new Error('Login failed — success indicator not found after submit');
-    }
 
-    logEvent({
-      userId, userEmail, sessionId, portalId,
-      action: 'portal_login', outcome: 'success',
-      durationMs: Date.now() - start,
-    });
-    onProgress?.({
-      type: 'login', portalId, portalName: playbook.name,
-      message: `✓ Logged in to ${playbook.name}`,
-      ts: Date.now(),
-    });
+      await page.click(playbook.login.submit);
+
+      const loginOk = await page.waitForSelector(playbook.login.success_indicator, { timeout: 20_000 })
+        .then(() => true).catch(() => false);
+
+      if (!loginOk) {
+        if (playbook.login.captcha) {
+          const captchaStillPresent = await page.locator(playbook.login.captcha.image_selector)
+            .isVisible({ timeout: 2_000 }).catch(() => false);
+          if (!captchaStillPresent) {
+            throw new Error(`Login appears successful but success_indicator "${playbook.login.success_indicator}" not found. Update the playbook.`);
+          }
+          const freshBuf = await page.locator(playbook.login.captcha.image_selector).first().screenshot()
+            .catch(async () => page!.screenshot({ fullPage: false }));
+          throw new CaptchaRequiredError(freshBuf.toString('base64'));
+        }
+        throw new Error('Login failed — success indicator not found after submit');
+      }
+
+      logEvent({
+        userId, userEmail, sessionId, portalId,
+        action: 'portal_login', outcome: 'success',
+        durationMs: Date.now() - start,
+      });
+      onProgress?.({
+        type: 'login', portalId, portalName: playbook.name,
+        message: `✓ Logged in to ${playbook.name}`,
+        ts: Date.now(),
+      });
+    }
 
     // ── Quote flow ─────────────────────────────────────────────────────────
     for (const step of playbook.quote_flow) {

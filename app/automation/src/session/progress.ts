@@ -3,15 +3,20 @@ import { EventEmitter } from 'events';
 // ── Progress event types ────────────────────────────────────────────────────
 
 export interface ProgressEvent {
-  type:       'login' | 'step' | 'result' | 'error' | 'quote_complete' | 'all_complete' | 'captcha_required';
+  type:       'login' | 'step' | 'result' | 'error' | 'quote_complete' | 'all_complete' | 'captcha_required'
+            // Cookie handoff flow events (channel key = `handoff:<handoffId>`)
+            | 'handoff_waiting' | 'cookies_received' | 'replay_started' | 'replay_step'
+            | 'replay_complete' | 'replay_failed' | 'session_expired';
   portalId:   string;
   portalName: string;
   message:    string;
   ts:         number;
   /** Only on type=result — headline figures */
   data?:      { premium?: number | null; idv?: number | null };
-  /** Only on type=quote_complete — full quote result for this portal */
+  /** Only on type=quote_complete | replay_complete — full quote result */
   result?:    Record<string, unknown>;
+  /** Only on type=cookies_received — how many cookies were captured */
+  cookieCount?: number;
 }
 
 // ── Per-session EventEmitter store ─────────────────────────────────────────

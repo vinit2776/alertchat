@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Alert Insurance Session Capture",
+  "version": "1.0.0",
+  "description": "Captures your insurer portal session and sends it to Alert Insurance so the automation can resume after a failed login.",
+  "permissions": ["cookies", "storage", "activeTab"],
+  "host_permissions": [
+    "https://*.uiic.in/*",
+    "https://*.iciclombard.com/*",
+    "https://*.tataaig.com/*",
+    "https://*.bajajallianz.com/*",
+    "https://*.hdfcergo.com/*",
+    "https://*.newindia.co.in/*",
+    "https://*.nationalinsurance.nic.co.in/*",
+    "https://*.orientalinsurance.org.in/*",
+    "https://alertchat-production.up.railway.app/*"
+  ],
+  "action": {
+    "default_title": "Send portal session to Alert Insurance",
+    "default_popup": "popup.html"
+  }
+}

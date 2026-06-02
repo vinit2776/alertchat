@@ -1266,6 +1266,277 @@ router.post('/quotes/:id/manual-entry', requireAdmin, async (req: Request, res: 
   } catch (err) { next(err); }
 });
 
+// ── Cookie Handoff (Phase 2) ──────────────────────────────────────────────
+//
+// Flow:
+//  1. Admin clicks "Take Over" on a failed quote → frontend POSTs
+//     /api/admin/handoff/start, gets back a handoffId
+//  2. Frontend opens SSE on /api/admin/handoff/:handoffId/events
+//  3. Admin opens the insurer portal in their own tab, logs in
+//  4. Admin clicks the Chrome extension → extension POSTs cookies to
+//     /api/admin/portal-sessions with the handoffId; backend stores the
+//     session and emits a `cookies_received` event on the handoff channel
+//  5. Backend automatically starts the replay using the stored session,
+//     streaming each step via `replay_step` events, ending with
+//     `replay_complete` or `replay_failed` / `session_expired`
+
+interface HandoffInfo {
+  userId:        string;
+  portalId:      string;
+  quoteResultId: string;   // quote_results row this handoff is replaying
+  sessionId:     string;   // chat session, used for audit trail
+  createdAt:     number;
+}
+const handoffs = new Map<string, HandoffInfo>();
+
+/** Sweeper: drop handoffs older than 1 hour to keep the map small */
+setInterval(() => {
+  const cutoff = Date.now() - 60 * 60 * 1000;
+  for (const [id, info] of handoffs) {
+    if (info.createdAt < cutoff) handoffs.delete(id);
+  }
+}, 5 * 60 * 1000).unref?.();
+
+/** POST /api/admin/handoff/start — create a handoff for a failed quote */
+router.post('/handoff/start', requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { quoteResultId } = req.body as { quoteResultId?: string };
+    if (!quoteResultId) return res.status(400).json({ success: false, message: 'quoteResultId required' });
+
+    const row = await queryOne<{ portal_id: string; session_id: string }>(
+      'SELECT portal_id, session_id FROM quote_results WHERE id = $1',
+      [quoteResultId]
+    );
+    if (!row) return res.status(404).json({ success: false, message: 'Quote not found' });
+
+    const handoffId = `ho_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+    handoffs.set(handoffId, {
+      userId:        req.user!.sub,
+      portalId:      row.portal_id,
+      quoteResultId,
+      sessionId:     row.session_id,
+      createdAt:     Date.now(),
+    });
+
+    res.json({ success: true, handoffId, portalId: row.portal_id });
+  } catch (err) { next(err); }
+});
+
+/** SSE channel scoped to one handoff modal */
+router.get('/handoff/:handoffId/events', requireAdmin, (req: Request, res: Response) => {
+  const { handoffId } = req.params;
+  const info = handoffs.get(handoffId);
+  if (!info || info.userId !== req.user!.sub) {
+    res.status(404).end(); return;
+  }
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection',    'keep-alive');
+  res.flushHeaders?.();
+
+  const channel = `handoff:${handoffId}`;
+  const handler = (event: import('../session/progress').ProgressEvent) => {
+    res.write(`data: ${JSON.stringify(event)}\n\n`);
+    if (event.type === 'replay_complete' || event.type === 'replay_failed' || event.type === 'session_expired') {
+      // Close stream once the flow is done
+      try { res.end(); } catch { /* already closed */ }
+    }
+  };
+
+  const { onProgress, offProgress } = require('../session/progress');
+  onProgress(channel, handler);
+
+  // Initial waiting state
+  res.write(`data: ${JSON.stringify({
+    type: 'handoff_waiting', portalId: info.portalId, portalName: info.portalId.toUpperCase(),
+    message: 'Waiting for you to log in and click the extension…', ts: Date.now(),
+  })}\n\n`);
+
+  // Heartbeat every 15 s so proxies don't kill the stream
+  const hb = setInterval(() => res.write(': hb\n\n'), 15_000);
+
+  req.on('close', () => {
+    clearInterval(hb);
+    offProgress(channel, handler);
+  });
+});
+
+/**
+ * Extension POSTs cookies here after the admin logs into the portal.
+ * Body: { handoffId, portalId, cookies: [...], origins?: [...] }
+ *
+ * Cookies must be in Playwright's storageState format:
+ *   { name, value, domain, path, expires, httpOnly, secure, sameSite }
+ *
+ * On success this kicks off the replay immediately so the admin sees the
+ * quote run end-to-end without further clicks.
+ */
+router.post('/portal-sessions', requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { handoffId, portalId, cookies, origins } = req.body as {
+      handoffId?: string; portalId?: string;
+      cookies?: any[]; origins?: any[];
+    };
+
+    if (!handoffId || !portalId || !Array.isArray(cookies)) {
+      return res.status(400).json({ success: false, message: 'handoffId, portalId, cookies required' });
+    }
+
+    const info = handoffs.get(handoffId);
+    if (!info || info.userId !== req.user!.sub) {
+      return res.status(404).json({ success: false, message: 'handoff not found' });
+    }
+    if (info.portalId !== portalId) {
+      return res.status(400).json({ success: false, message: `handoff is for portal ${info.portalId}, got ${portalId}` });
+    }
+
+    const storageState = { cookies, origins: origins ?? [] };
+
+    // Mark older sessions for this (user, portal) as revoked
+    await query(
+      `UPDATE portal_sessions SET status = 'revoked'
+       WHERE user_id = $1 AND portal_id = $2 AND status = 'active'`,
+      [req.user!.sub, portalId]
+    );
+
+    const row = await queryOne<{ id: string }>(
+      `INSERT INTO portal_sessions (user_id, portal_id, storage_state)
+       VALUES ($1, $2, $3) RETURNING id`,
+      [req.user!.sub, portalId, JSON.stringify(storageState)]
+    );
+
+    const portalSessionId = row!.id;
+    const channel         = `handoff:${handoffId}`;
+    const { emitProgress } = require('../session/progress');
+
+    emitProgress(channel, {
+      type: 'cookies_received', portalId, portalName: portalId.toUpperCase(),
+      message: `Captured ${cookies.length} cookies — starting replay…`,
+      cookieCount: cookies.length, ts: Date.now(),
+    });
+
+    logEvent({
+      userId: req.user!.sub, userEmail: req.user!.email, sessionId: info.sessionId,
+      action: 'cookies_received' as any, outcome: 'success',
+      meta: { portalId, cookieCount: cookies.length, portalSessionId },
+    } as any);
+
+    // Kick off the replay in the background — emit progress on the same channel
+    replayQuoteWithSession({
+      quoteResultId: info.quoteResultId,
+      portalSessionId,
+      userId:        req.user!.sub,
+      userEmail:     req.user!.email,
+      sessionId:     info.sessionId,
+      channel,
+    }).catch(err => {
+      console.error('[replay] background error:', err);
+      emitProgress(channel, {
+        type: 'replay_failed', portalId, portalName: portalId.toUpperCase(),
+        message: `Replay error: ${err?.message ?? 'unknown'}`, ts: Date.now(),
+      });
+    });
+
+    res.json({ success: true, portalSessionId });
+  } catch (err) { next(err); }
+});
+
+/** Background replay: loads stored session, runs playbook with skipLogin=true,
+ *  streams progress over the handoff channel, persists premium to quote_results. */
+async function replayQuoteWithSession(opts: {
+  quoteResultId: string; portalSessionId: string;
+  userId: string; userEmail: string; sessionId: string;
+  channel: string;
+}): Promise<void> {
+  const { quoteResultId, portalSessionId, userId, userEmail, sessionId, channel } = opts;
+  const { emitProgress } = await import('../session/progress');
+  const { runPlaybook, SessionExpiredError: SExp } = await import('../portal/playbook-runner');
+
+  // Load the original failed quote — we need confirmedFields + portalId
+  const quote = await queryOne<{
+    portal_id: string; quote_data: { confirmedFields?: Record<string, string> };
+  }>('SELECT portal_id, quote_data FROM quote_results WHERE id = $1', [quoteResultId]);
+  if (!quote) throw new Error('Quote not found');
+
+  const session = await queryOne<{ storage_state: any }>(
+    'SELECT storage_state FROM portal_sessions WHERE id = $1', [portalSessionId]
+  );
+  if (!session) throw new Error('Portal session not found');
+
+  const confirmedFields = quote.quote_data?.confirmedFields ?? {};
+  const portalId        = quote.portal_id;
+  const portalName      = portalId.toUpperCase();
+
+  emitProgress(channel, {
+    type: 'replay_started', portalId, portalName,
+    message: 'Replaying quote with your session…', ts: Date.now(),
+  });
+
+  const sessionKey = `${sessionId}:${portalId}:replay`;
+  let acquired = false;
+  try {
+    const { context } = await browserPool.acquire(sessionKey, session.storage_state);
+    acquired = true;
+
+    const result = await runPlaybook(
+      portalId, confirmedFields, context,
+      sessionId, userId, userEmail,
+      undefined,   // captchaText
+      false,       // debugMode
+      (ev) => {
+        // Re-emit each step on the handoff channel as a replay_step
+        emitProgress(channel, { ...ev, type: 'replay_step' });
+      },
+      false,       // extractResumeState
+      true,        // skipLogin ✨
+    );
+
+    // Persist new premium back to the original quote_results row
+    await query(
+      `UPDATE quote_results
+       SET premium = $2, idv = COALESCE($3, idv),
+           quote_data = quote_data
+                       || jsonb_build_object('cookieHandoffReplay', 'true',
+                                              'replayedAt', to_jsonb(now()),
+                                              'replayedBy', $4)
+       WHERE id = $1`,
+      [quoteResultId, result.premium, result.idv ?? null, userId]
+    );
+
+    // Touch the portal session so we know it works
+    await query(
+      `UPDATE portal_sessions SET last_used_at = now() WHERE id = $1`,
+      [portalSessionId]
+    );
+
+    emitProgress(channel, {
+      type: 'replay_complete', portalId, portalName,
+      message: result.success
+        ? `✓ Premium ₹${result.premium?.toLocaleString('en-IN') ?? '—'}`
+        : `Replay finished but no premium — ${result.errorMessage ?? 'unknown'}`,
+      result: result as any, ts: Date.now(),
+    });
+  } catch (err: any) {
+    if (err instanceof SExp) {
+      // Mark the session expired so the UI prompts a fresh login
+      await query(`UPDATE portal_sessions SET status = 'expired' WHERE id = $1`, [portalSessionId]);
+      emitProgress(channel, {
+        type: 'session_expired', portalId, portalName,
+        message: 'Your portal session expired — please log in again and re-send cookies',
+        ts: Date.now(),
+      });
+    } else {
+      emitProgress(channel, {
+        type: 'replay_failed', portalId, portalName,
+        message: err?.message ?? 'Replay failed', ts: Date.now(),
+      });
+    }
+  } finally {
+    if (acquired) await browserPool.release(sessionKey);
+  }
+}
+
 /** Dismiss a failed quote without entering a premium (e.g. user gave up). */
 router.post('/quotes/:id/dismiss', requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {

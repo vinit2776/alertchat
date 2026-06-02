@@ -3,7 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { requireAuth } from '../middleware/auth';
 import { ensureSession, persistSession } from '../ai/conversation';
 import { browserPool } from '../session/pool';
-import { runPlaybook, runBuyFlow, loadPlaybook, CaptchaRequiredError } from '../portal/playbook-runner';
+import { runBuyFlow, loadPlaybook, CaptchaRequiredError } from '../portal/playbook-runner';
 import { getEnabledCompanies } from '../portal/registry';
 import { computeMotorFields } from '../portal/field-computer';
 import { logEvent } from '../audit/logger';
@@ -11,6 +11,7 @@ import { query } from '../db/client';
 import { emitProgress, onProgress, offProgress, cleanupProgress } from '../session/progress';
 import type { ProgressEvent } from '../session/progress';
 import { register as registerAction, lookup as lookupAction, update as updateAction, discard as discardAction } from '../session/pending-actions';
+import { getConnector, getConnectorType } from '../connectors/registry';
 
 const router = Router();
 
@@ -46,23 +47,35 @@ router.post('/:sessionId/start', requireAuth, async (req: Request, res: Response
     }
 
     const poolStatus = browserPool.status();
-    const canStart   = Math.min(targetCompanies.length, poolStatus.free);
 
-    if (canStart === 0) {
+    // API-based companies don't consume browser pool slots
+    const portalCompanies = targetCompanies.filter(c => getConnectorType(c.id) === 'portal');
+    const apiCompanies    = targetCompanies.filter(c => getConnectorType(c.id) === 'api');
+
+    const portalSlots = Math.min(portalCompanies.length, poolStatus.free);
+
+    if (portalCompanies.length > 0 && portalSlots === 0) {
       res.status(503).json({
-        success: false,
-        message: 'All browser slots are busy. Please try again in a few minutes.',
+        success:  false,
+        message:  'All browser slots are busy. Please try again in a few minutes.',
         poolStatus,
       });
       return;
     }
 
+    // API companies always start; portal companies limited by pool slots
+    const canStart = portalSlots + apiCompanies.length;
+
     // Mark session as filling before starting async work
     state.status = 'filling';
     persistSession(sessionId);
 
-    const companiesStarted  = targetCompanies.slice(0, canStart);
-    const companiesQueued   = targetCompanies.slice(canStart);
+    // All API companies start immediately; portal companies limited by pool slots
+    const companiesStarted = [
+      ...apiCompanies,
+      ...portalCompanies.slice(0, portalSlots),
+    ];
+    const companiesQueued  = portalCompanies.slice(portalSlots);
 
     if (companiesQueued.length) {
       // Future: BullMQ queue. For now, inform the user.
@@ -82,75 +95,92 @@ router.post('/:sessionId/start', requireAuth, async (req: Request, res: Response
       startedPortals: companiesStarted.map(c => ({ id: c.id, name: c.name })),
     });
 
-    // ── Background: run all portal jobs, emit per-portal results via SSE ─────
-    // Don't await — let the request return now.
+    // ── Background: run all jobs, emit per-insurer results via SSE ──────────
+    // Portal connectors consume a browser pool slot.
+    // API connectors (e.g. Bajaj) run directly — no pool slot needed.
     (async () => {
-    // Run in parallel — one browser context per company
+    const enrichedFields =
+      state.insuranceType === 'motor'
+        ? computeMotorFields(state.confirmedFields)
+        : state.confirmedFields;
+
     const jobs = companiesStarted.map(async (company) => {
-      const sessionKey = `${sessionId}:${company.id}`;
-      let acquired = false;
+      const connector     = getConnector(company.id);
+      const isPortal      = connector.type === 'portal';
+      const sessionKey    = `${sessionId}:${company.id}`;
+      let acquired        = false;
 
       try {
-        const { slotId, context } = await browserPool.acquire(sessionKey);
-        acquired = true;
+        let result: any;
 
-        logEvent({
-          userId: user.sub, userEmail: user.email, sessionId, portalId: company.id,
-          action: 'browser_context_assigned', outcome: 'success',
-          meta: { slotId },
-        });
+        if (isPortal) {
+          // ── Portal path: acquire browser slot ──────────────────────────
+          const { slotId, context } = await browserPool.acquire(sessionKey);
+          acquired = true;
 
-        const enrichedFields =
-          state.insuranceType === 'motor'
-            ? computeMotorFields(state.confirmedFields)
-            : state.confirmedFields;
+          logEvent({
+            userId: user.sub, userEmail: user.email, sessionId, portalId: company.id,
+            action: 'browser_context_assigned', outcome: 'success',
+            meta: { slotId },
+          });
 
-        const playbook  = loadPlaybook(company.id);
-        const hasBuyFlow = !!playbook.buy_flow;
+          result = await connector.getQuote(
+            enrichedFields,
+            sessionId, user.sub, user.email,
+            {
+              browserContext: context,
+              onProgress: (event) => emitProgress(sessionId, event),
+            },
+          );
 
-        const result = await runPlaybook(
-          company.id, enrichedFields, context,
-          sessionId, user.sub, user.email,
-          undefined,   // captchaText
-          undefined,   // debugMode
-          (event) => emitProgress(sessionId, event),  // SSE progress
-          hasBuyFlow,  // extractResumeState — only when a buy_flow is configured
-        );
-
-        // If we got resume state, persist it to DB so /proceed can restart the
-        // browser even after restart / multi-instance / pool eviction.
-        if (result.success && result.resumeState) {
-          try {
-            await registerAction({
-              sessionId,
-              portalId:     company.id,
-              portalName:   playbook.name,
-              userId:       user.sub,
-              storageState: result.resumeState.storageState,
-              resumeUrl:    result.resumeState.resumeUrl,
-              quoteRef:     result.quoteRef ?? undefined,
-            });
-          } catch (err: any) {
-            console.error('[Quote] Failed to persist pending action:', err.message);
+          // Persist resume state to DB so /proceed can restart after pool eviction
+          if (result.success && result.resumeState) {
+            try {
+              const playbook = loadPlaybook(company.id);
+              await registerAction({
+                sessionId,
+                portalId:     company.id,
+                portalName:   playbook.name ?? company.name,
+                userId:       user.sub,
+                storageState: result.resumeState.storageState,
+                resumeUrl:    result.resumeState.resumeUrl,
+                quoteRef:     result.quoteRef ?? undefined,
+              });
+            } catch (err: any) {
+              console.error('[Quote] Failed to persist pending action:', err.message);
+            }
           }
+
+        } else {
+          // ── API path: call directly, no browser needed ──────────────────
+          logEvent({
+            userId: user.sub, userEmail: user.email, sessionId, portalId: company.id,
+            action: 'browser_context_assigned', outcome: 'success',
+            meta: { mode: 'api', connectorType: connector.type },
+          });
+
+          result = await connector.getQuote(
+            enrichedFields,
+            sessionId, user.sub, user.email,
+            { onProgress: (event) => emitProgress(sessionId, event) },
+          );
         }
 
-        // Strip non-serialisable fields before returning to the HTTP client
+        // Strip non-serialisable fields before emitting to the HTTP client
         const { resumeState, screenshotBase64, ...clientResult } = result;
 
-        // Emit per-portal quote_complete event so the frontend can render this card NOW
         emitProgress(sessionId, {
           type:       'quote_complete',
           portalId:   company.id,
-          portalName: playbook.name,
+          portalName: company.name,
           message:    '',
           ts:         Date.now(),
           result:     clientResult,
         });
 
         return clientResult;
+
       } finally {
-        // Always release the pool slot — resume state lives in DB now
         if (acquired) await browserPool.release(sessionKey);
       }
     });
@@ -158,36 +188,35 @@ router.post('/:sessionId/start', requireAuth, async (req: Request, res: Response
     const settled = await Promise.allSettled(jobs);
 
     const results = settled.map((r, i) => {
-      if (r.status === 'fulfilled') return r.value;
-      const company = companiesStarted[i];
-      const err = r.reason;
-      let rejectedResult: any;
-      if (err instanceof CaptchaRequiredError) {
-        rejectedResult = {
-          portalId: company.id, portalName: company.name,
-          success: false, premium: null, idv: null,
-          rawData: {},
-          captchaRequired:    true,
-          captchaImageBase64: err.captchaImageBase64,
-          errorMessage: err.message, durationMs: 0,
-        };
-        // Emit captcha_required event so the frontend renders the captcha UI
-        emitProgress(sessionId, {
-          type: 'captcha_required', portalId: company.id, portalName: company.name,
-          message: 'Captcha needs human input', ts: Date.now(), result: rejectedResult,
-        });
-      } else {
-        rejectedResult = {
-          portalId: company.id, portalName: company.name,
-          success: false, premium: null, idv: null,
-          rawData: {},
-          errorMessage: err?.message ?? 'Unknown error', durationMs: 0,
-        };
-        emitProgress(sessionId, {
-          type: 'quote_complete', portalId: company.id, portalName: company.name,
-          message: '', ts: Date.now(), result: rejectedResult,
-        });
+      if (r.status === 'fulfilled') {
+        // Check if captcha was returned inside a successful result shape
+        const val = r.value as any;
+        if (val?.captchaRequired) {
+          emitProgress(sessionId, {
+            type: 'captcha_required', portalId: val.portalId ?? companiesStarted[i].id,
+            portalName: companiesStarted[i].name,
+            message: 'Captcha needs human input', ts: Date.now(), result: val,
+          });
+        }
+        return val;
       }
+
+      // Unexpected thrown error (pool full, network crash, etc.)
+      const company = companiesStarted[i];
+      const err     = r.reason;
+      const rejectedResult: any = {
+        portalId: company.id, portalName: company.name,
+        success: false, premium: null, idv: null,
+        rawData: {},
+        captchaRequired:    err instanceof CaptchaRequiredError || false,
+        captchaImageBase64: err instanceof CaptchaRequiredError ? err.captchaImageBase64 : undefined,
+        errorMessage: err?.message ?? 'Unknown error', durationMs: 0,
+      };
+      emitProgress(sessionId, {
+        type: rejectedResult.captchaRequired ? 'captcha_required' : 'quote_complete',
+        portalId: company.id, portalName: company.name,
+        message: '', ts: Date.now(), result: rejectedResult,
+      });
       return rejectedResult;
     });
 
@@ -207,7 +236,13 @@ router.post('/:sessionId/start', requireAuth, async (req: Request, res: Response
           uuidv4(), sessionId, user.sub, qr.portalId, state.insuranceType,
           regNumber, vehicleMake, vehicleModel,
           qr.premium, qr.idv,
-          JSON.stringify({ success: qr.success, rawData: qr.rawData, error: qr.errorMessage }),
+          JSON.stringify({
+            success:         qr.success,
+            rawData:         qr.rawData,
+            errorMessage:    qr.errorMessage,
+            // Persist fields so a Phase 2 cookie-handoff retry can replay the quote
+            confirmedFields: state.confirmedFields,
+          }),
         ],
       );
     }

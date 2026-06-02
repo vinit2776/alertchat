@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 
 const autoBase = (import.meta as any).env.VITE_AUTOMATION_URL || 'http://localhost:4001';
 
@@ -656,32 +656,100 @@ function FailedQuotesPanel({ token, onResolved }: { token: string; onResolved: (
   );
 }
 
+/* ── Cookie Handoff Modal ─────────────────────────────────────────────────
+ * Three stages, all visible at once:
+ *   1. Log in to portal (manual, in your own tab)
+ *   2. Click the extension button (waits for cookies_received SSE event)
+ *   3. Replay the quote (waits for replay_complete | replay_failed | session_expired)
+ * Retry buttons appear next to each stage on failure. */
+type Stage = 'pending' | 'active' | 'ok' | 'fail';
+interface StageState { status: Stage; message?: string }
+
 function TakeOverModal({ token, quote, portalUrl, onClose, onSaved }: {
   token: string; quote: FailedQuote; portalUrl: string;
   onClose: () => void; onSaved: () => void;
 }) {
-  const [premium, setPremium] = useState('');
-  const [idv, setIdv]         = useState('');
-  const [notes, setNotes]     = useState('');
-  const [submitting, setSub]  = useState(false);
-  const [err, setErr]         = useState('');
+  const [handoffId, setHandoffId]   = useState<string | null>(null);
+  const [stage1, setStage1]         = useState<StageState>({ status: 'active', message: `Open ${quote.portal_id.toUpperCase()} in a new tab and log in normally.` });
+  const [stage2, setStage2]         = useState<StageState>({ status: 'pending', message: 'Waiting for the extension to send cookies…' });
+  const [stage3, setStage3]         = useState<StageState>({ status: 'pending' });
+  const [premium, setPremium]       = useState<number | null>(null);
+  const [idv, setIdv]               = useState<number | null>(null);
+  const [error, setError]           = useState('');
+  const sseRef                       = useRef<EventSource | null>(null);
 
-  async function submit() {
-    const p = parseFloat(premium);
-    if (!p || p <= 0) { setErr('Enter a valid premium amount'); return; }
-    setSub(true); setErr('');
+  // Start the handoff (create handoffId on mount)
+  async function startHandoff() {
+    setError('');
+    setStage1({ status: 'active', message: `Open ${quote.portal_id.toUpperCase()} in a new tab and log in normally.` });
+    setStage2({ status: 'pending', message: 'Waiting for the extension to send cookies…' });
+    setStage3({ status: 'pending' });
+    setPremium(null); setIdv(null);
+
     try {
-      const res  = await fetch(`${autoBase}/api/admin/quotes/${quote.id}/manual-entry`, {
-        method:  'POST',
+      const res  = await fetch(`${autoBase}/api/admin/handoff/start`, {
+        method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ premium: p, idv: idv ? parseFloat(idv) : undefined, notes: notes || undefined }),
+        body:   JSON.stringify({ quoteResultId: quote.id }),
       });
       const data = await res.json();
-      if (!data.success) throw new Error(data.message);
-      onSaved();
-    } catch (e: any) { setErr(e.message); }
-    finally { setSub(false); }
+      if (!data.success) throw new Error(data.message ?? 'Failed to start handoff');
+      setHandoffId(data.handoffId);
+    } catch (e: any) {
+      setError(e.message);
+      setStage1({ status: 'fail', message: e.message });
+    }
   }
+
+  useEffect(() => { startHandoff(); /* once per mount */ }, []);
+
+  // Open SSE channel once we have a handoffId
+  useEffect(() => {
+    if (!handoffId) return;
+
+    const url = `${autoBase}/api/admin/handoff/${handoffId}/events?token=${encodeURIComponent(token)}`;
+    // Note: EventSource does not support custom headers, so we pass the JWT in
+    // the query string. The backend accepts it via middleware fallback.
+    const es  = new EventSource(url, { withCredentials: false });
+    sseRef.current = es;
+
+    es.onmessage = (e) => {
+      try {
+        const ev = JSON.parse(e.data) as { type: string; message?: string; cookieCount?: number; result?: any };
+
+        if (ev.type === 'cookies_received') {
+          setStage1({ status: 'ok', message: `Logged in — ${ev.cookieCount ?? '?'} cookies captured` });
+          setStage2({ status: 'ok', message: `✓ ${ev.cookieCount ?? 0} cookies received` });
+          setStage3({ status: 'active', message: 'Replaying quote…' });
+        } else if (ev.type === 'replay_started') {
+          setStage3({ status: 'active', message: ev.message ?? 'Replaying quote…' });
+        } else if (ev.type === 'replay_step') {
+          setStage3({ status: 'active', message: ev.message ?? 'Working…' });
+        } else if (ev.type === 'replay_complete') {
+          const r = ev.result ?? {};
+          if (r.success) {
+            setStage3({ status: 'ok', message: ev.message ?? 'Done' });
+            setPremium(r.premium ?? null);
+            setIdv(r.idv ?? null);
+          } else {
+            setStage3({ status: 'fail', message: r.errorMessage ?? ev.message ?? 'Replay failed' });
+          }
+        } else if (ev.type === 'replay_failed') {
+          setStage3({ status: 'fail', message: ev.message ?? 'Replay failed' });
+        } else if (ev.type === 'session_expired') {
+          setStage1({ status: 'fail', message: 'Session expired — please log in again' });
+          setStage2({ status: 'fail', message: ev.message ?? 'Session expired' });
+          setStage3({ status: 'pending' });
+        }
+      } catch { /* ignore malformed */ }
+    };
+    es.onerror = () => { /* keep stream open; backend closes when done */ };
+
+    return () => { es.close(); sseRef.current = null; };
+  }, [handoffId, token]);
+
+  const isDone = stage3.status === 'ok';
+  const isFail = stage1.status === 'fail' || stage2.status === 'fail' || stage3.status === 'fail';
 
   return (
     <div style={fq.modalBackdrop} onClick={onClose}>
@@ -692,6 +760,7 @@ function TakeOverModal({ token, quote, portalUrl, onClose, onSaved }: {
         </div>
 
         <div style={fq.modalBody}>
+          {/* Vehicle context */}
           <div style={fq.vehicleCard}>
             <div style={{ fontSize: 12, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.5 }}>Vehicle</div>
             <div style={{ fontWeight: 700, fontSize: 16, marginTop: 4 }}>{quote.reg_number ?? '—'}</div>
@@ -700,49 +769,115 @@ function TakeOverModal({ token, quote, portalUrl, onClose, onSaved }: {
             </div>
           </div>
 
-          <ol style={fq.steps}>
-            <li>
-              <b>Open the portal in your own browser</b> and log in manually:
-              {portalUrl && (
-                <a href={portalUrl} target="_blank" rel="noreferrer" style={fq.portalLink}>
-                  ↗ Open {quote.portal_id.toUpperCase()}
-                </a>
+          {/* Handoff ID for the extension */}
+          {handoffId && (
+            <div style={fq.handoffPill}>
+              <span style={{ fontSize: 11, color: '#64748b' }}>Handoff ID (paste in extension)</span>
+              <code style={fq.handoffCode}
+                onClick={() => navigator.clipboard.writeText(handoffId)}
+                title="Click to copy">{handoffId}</code>
+            </div>
+          )}
+
+          {/* 3-stage tracker */}
+          <StageRow num={1} label="Open portal and log in" state={stage1}
+            action={portalUrl && (
+              <a href={portalUrl} target="_blank" rel="noreferrer" style={fq.portalLink}>↗ Open {quote.portal_id.toUpperCase()}</a>
+            )} />
+          <StageRow num={2} label="Click Alert Insurance extension" state={stage2}
+            action={stage2.status === 'fail' && (
+              <button style={fq.retryBtn} onClick={startHandoff}>↻ Retry</button>
+            )} />
+          <StageRow num={3} label="Replay quote (automatic)" state={stage3}
+            action={stage3.status === 'fail' && (
+              <button style={fq.retryBtn} onClick={startHandoff}>↻ Restart</button>
+            )} />
+
+          {/* Result panel */}
+          {isDone && (
+            <div style={fq.resultPanel}>
+              <div style={{ fontSize: 24, fontWeight: 800 }}>₹{premium?.toLocaleString('en-IN') ?? '—'}</div>
+              <div style={{ fontSize: 12, color: '#065f46', marginTop: 2 }}>
+                Premium captured · IDV ₹{idv?.toLocaleString('en-IN') ?? '—'}
+              </div>
+            </div>
+          )}
+
+          {error && <div style={{ ...s.error, marginTop: 12 }}>{error}</div>}
+
+          <div style={{ display: 'flex', gap: 8, marginTop: 16, justifyContent: 'space-between', alignItems: 'center' }}>
+            <details style={{ fontSize: 11, color: '#64748b' }}>
+              <summary style={{ cursor: 'pointer' }}>Enter premium manually instead</summary>
+              <ManualEntryFallback token={token} quote={quote} onSaved={onSaved} />
+            </details>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button style={fq.cancelBtn} onClick={onClose}>{isDone || isFail ? 'Close' : 'Cancel'}</button>
+              {isDone && (
+                <button style={fq.saveBtn} onClick={onSaved}>✓ Done</button>
               )}
-            </li>
-            <li>Run the quote there using the vehicle details above.</li>
-            <li>When the portal shows the premium, type it below and click Save.</li>
-          </ol>
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-            <div>
-              <label style={fq.label}>Premium (₹) *</label>
-              <input style={fq.input} value={premium} onChange={e => setPremium(e.target.value)}
-                placeholder="e.g. 4582.50" inputMode="decimal" autoFocus />
             </div>
-            <div>
-              <label style={fq.label}>IDV (₹)</label>
-              <input style={fq.input} value={idv} onChange={e => setIdv(e.target.value)}
-                placeholder="optional" inputMode="decimal" />
-            </div>
-          </div>
-
-          <div style={{ marginTop: 12 }}>
-            <label style={fq.label}>Notes (optional)</label>
-            <textarea style={{ ...fq.input, minHeight: 60, fontFamily: 'inherit' }}
-              value={notes} onChange={e => setNotes(e.target.value)}
-              placeholder="Any context — e.g. add-ons selected, why automation failed…" />
-          </div>
-
-          {err && <div style={{ ...s.error, marginTop: 12 }}>{err}</div>}
-
-          <div style={{ display: 'flex', gap: 8, marginTop: 16, justifyContent: 'flex-end' }}>
-            <button style={fq.cancelBtn} onClick={onClose}>Cancel</button>
-            <button style={fq.saveBtn} onClick={submit} disabled={submitting}>
-              {submitting ? 'Saving…' : '✓ Save Premium'}
-            </button>
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function StageRow({ num, label, state, action }: {
+  num: number; label: string; state: StageState; action?: React.ReactNode;
+}) {
+  const colors: Record<Stage, { bg: string; fg: string; icon: string }> = {
+    pending: { bg: '#f1f5f9', fg: '#94a3b8', icon: String(num) },
+    active:  { bg: '#dbeafe', fg: '#1e40af', icon: '⏳' },
+    ok:      { bg: '#d1fae5', fg: '#065f46', icon: '✓' },
+    fail:    { bg: '#fee2e2', fg: '#991b1b', icon: '✕' },
+  };
+  const c = colors[state.status];
+  return (
+    <div style={{ display: 'flex', gap: 12, padding: '10px 12px', borderRadius: 10, background: c.bg, marginBottom: 8, alignItems: 'center' }}>
+      <div style={{ width: 28, height: 28, borderRadius: '50%', background: '#fff', color: c.fg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, flexShrink: 0 }}>
+        {c.icon}
+      </div>
+      <div style={{ flex: 1 }}>
+        <div style={{ fontWeight: 600, color: c.fg, fontSize: 13 }}>{label}</div>
+        {state.message && <div style={{ fontSize: 11, color: c.fg, opacity: 0.85, marginTop: 2 }}>{state.message}</div>}
+      </div>
+      {action && <div>{action}</div>}
+    </div>
+  );
+}
+
+function ManualEntryFallback({ token, quote, onSaved }: { token: string; quote: FailedQuote; onSaved: () => void }) {
+  const [premium, setPremium] = useState('');
+  const [idv, setIdv]         = useState('');
+  const [busy, setBusy]       = useState(false);
+  const [err, setErr]         = useState('');
+  async function submit() {
+    const p = parseFloat(premium);
+    if (!p || p <= 0) { setErr('Enter a valid premium'); return; }
+    setBusy(true); setErr('');
+    try {
+      const res  = await fetch(`${autoBase}/api/admin/quotes/${quote.id}/manual-entry`, {
+        method:  'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ premium: p, idv: idv ? parseFloat(idv) : undefined }),
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.message);
+      onSaved();
+    } catch (e: any) { setErr(e.message); }
+    finally { setBusy(false); }
+  }
+  return (
+    <div style={{ display: 'flex', gap: 6, marginTop: 8, alignItems: 'center' }}>
+      <input style={{ ...fq.input, width: 100, padding: '6px 8px', fontSize: 12 }}
+        placeholder="Premium ₹" value={premium} onChange={e => setPremium(e.target.value)} inputMode="decimal" />
+      <input style={{ ...fq.input, width: 90, padding: '6px 8px', fontSize: 12 }}
+        placeholder="IDV ₹" value={idv} onChange={e => setIdv(e.target.value)} inputMode="decimal" />
+      <button style={{ ...fq.saveBtn, padding: '6px 10px', fontSize: 12 }} onClick={submit} disabled={busy}>
+        {busy ? '…' : 'Save'}
+      </button>
+      {err && <span style={{ color: '#dc2626', fontSize: 10, marginLeft: 4 }}>{err}</span>}
     </div>
   );
 }
@@ -763,6 +898,10 @@ const fq: Record<string, React.CSSProperties> = {
   input:         { width: '100%', padding: '8px 12px', border: '1.5px solid #e2e8f0', borderRadius: 8, fontSize: 14, boxSizing: 'border-box' },
   cancelBtn:     { background: '#f1f5f9', color: '#475569', border: 'none', borderRadius: 8, padding: '10px 18px', fontWeight: 600, cursor: 'pointer' },
   saveBtn:       { background: '#059669', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 18px', fontWeight: 700, cursor: 'pointer' },
+  handoffPill:   { display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: '#fef9c3', border: '1px dashed #ca8a04', borderRadius: 8, padding: '8px 12px', marginBottom: 16, gap: 10 },
+  handoffCode:   { background: '#fff', padding: '4px 10px', borderRadius: 6, fontFamily: 'monospace', fontSize: 12, color: '#854d0e', fontWeight: 700, cursor: 'pointer', userSelect: 'all' },
+  retryBtn:      { background: '#fff', color: '#1a56db', border: '1.5px solid #1a56db', borderRadius: 6, padding: '4px 10px', fontSize: 12, fontWeight: 600, cursor: 'pointer' },
+  resultPanel:   { marginTop: 16, padding: '14px 16px', background: 'linear-gradient(135deg, #d1fae5, #a7f3d0)', borderRadius: 12, textAlign: 'center', border: '1px solid #6ee7b7' },
 };
 
 // ── Styles ─────────────────────────────────────────────────────────────────
