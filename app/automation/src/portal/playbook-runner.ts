@@ -285,7 +285,19 @@ export async function runPlaybook(
       }
     }
 
+    // If the page navigated away during modal dismiss (some portals redirect),
+    // navigate back to the login URL before trying to fill credentials.
+    if (page.isClosed() || !page.url().includes(playbook.base_url.replace(/^https?:\/\//, ''))) {
+      if (!page.isClosed()) {
+        await page.goto(loginUrl, { waitUntil: 'load', timeout: 30_000 });
+      }
+    }
+
     const creds = await getCredentials(portalId);
+
+    // Wait for the username field to be visible before clicking —
+    // ensures the login form has fully rendered after any redirects.
+    await page.locator(playbook.login.username_field).waitFor({ state: 'visible', timeout: 30_000 });
 
     // Click fields before filling — some portals (e.g. UIIC) have readonly="readonly"
     // removed only on focus; Playwright's fill() doesn't trigger focus by itself.

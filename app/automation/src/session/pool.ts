@@ -75,10 +75,10 @@ class BrowserPool {
       (window as any).chrome = { runtime: {} };
     });
 
-    // Block images, fonts and media to reduce memory/network usage in containers
+    // Block only large media types (video/audio) — images/fonts left alone
+    // since some portals check for loaded images before showing login forms
     await context.route('**/*', route => {
-      const type = route.request().resourceType();
-      if (type === 'image' || type === 'font' || type === 'media') {
+      if (route.request().resourceType() === 'media') {
         route.abort();
       } else {
         route.continue();
