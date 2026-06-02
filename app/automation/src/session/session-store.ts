@@ -112,6 +112,33 @@ export function cacheSize(): number {
   return cache.size;
 }
 
+// ── Background sweeper ────────────────────────────────────────────────────
+// Without this, expired sessions stay in cache until something tries to
+// read them. At 100+ sessions/day that's a measurable memory drift.
+// Sweeping every 5 min keeps the cache bounded.
+
+let sweepTimer: NodeJS.Timeout | null = null;
+
+export function startSweeper(intervalMs = 5 * 60 * 1000): void {
+  if (sweepTimer) return;  // idempotent
+  sweepTimer = setInterval(() => {
+    let purged = 0;
+    for (const [k, entry] of cache.entries()) {
+      if (isExpired(entry.state)) {
+        cache.delete(k);
+        purged++;
+      }
+    }
+    if (purged > 0) console.info(`[session-store] swept ${purged} expired sessions`);
+  }, intervalMs);
+  // Don't keep the process alive just for this timer
+  sweepTimer.unref();
+}
+
+export function stopSweeper(): void {
+  if (sweepTimer) { clearInterval(sweepTimer); sweepTimer = null; }
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────
 
 function isExpired(state: SessionState): boolean {

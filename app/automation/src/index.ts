@@ -12,7 +12,9 @@ import usersRoutes    from './routes/users.routes';
 import wizardRoutes   from './routes/wizard.routes';
 import { globalLimit, loginLimit, uploadLimit, quoteLimit, wizardLimit } from './middleware/rate-limit';
 import { browserPool } from './session/pool';
-import { query, queryOne } from './db/client';
+import { query, queryOne, closePool } from './db/client';
+import { startSweeper as startSessionSweeper, stopSweeper as stopSessionSweeper } from './session/session-store';
+import { startPendingActionsSweeper, stopPendingActionsSweeper } from './session/pending-actions';
 
 const app = express();
 
@@ -79,15 +81,37 @@ const server = app.listen(config.port, async () => {
   console.log(`\n🚀 Alert Automation Service on http://localhost:${config.port}`);
   console.log(`   ENV: ${config.nodeEnv}\n`);
   await seedDefaultAdmin();
+
+  // Start background sweepers — keep memory bounded over long uptimes
+  startSessionSweeper();
+  startPendingActionsSweeper((sessionKey) => browserPool.release(sessionKey));
 });
 
-async function shutdown() {
-  server.close();
-  await browserPool.shutdown();
+let shuttingDown = false;
+async function shutdown(signal: string) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`\n[shutdown] ${signal} received — closing gracefully…`);
+
+  stopSessionSweeper();
+  stopPendingActionsSweeper();
+
+  // Stop accepting new HTTP requests
+  server.close(() => console.log('[shutdown] HTTP server closed'));
+
+  // Race a 10s deadline so we don't hang forever
+  const cleanup = Promise.all([
+    browserPool.shutdown().catch(e => console.error('[shutdown] browserPool:', e)),
+    closePool().catch(e => console.error('[shutdown] DB pool:', e)),
+  ]);
+  const deadline = new Promise<void>(r => setTimeout(() => r(), 10_000));
+  await Promise.race([cleanup, deadline]);
+
+  console.log('[shutdown] done');
   process.exit(0);
 }
 
-process.on('SIGTERM', shutdown);
-process.on('SIGINT',  shutdown);
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT',  () => shutdown('SIGINT'));
 
 export default app;

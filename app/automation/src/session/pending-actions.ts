@@ -76,3 +76,29 @@ export function sweepExpired(): PendingAction[] {
   }
   return expired;
 }
+
+let sweepTimer: NodeJS.Timeout | null = null;
+
+/**
+ * Start the periodic sweeper. Closes expired Playwright pages and releases
+ * pool slots automatically. Called once from index.ts on boot.
+ */
+export function startPendingActionsSweeper(
+  releaseFn: (sessionKey: string) => Promise<void>,
+  intervalMs = 60_000,
+): void {
+  if (sweepTimer) return;
+  sweepTimer = setInterval(async () => {
+    const expired = sweepExpired();
+    for (const a of expired) {
+      try { await a.page.close(); } catch { /* ignore */ }
+      try { await releaseFn(a.sessionKey); } catch { /* ignore */ }
+      console.info(`[pending-actions] released expired action ${a.sessionId}:${a.portalId}`);
+    }
+  }, intervalMs);
+  sweepTimer.unref();
+}
+
+export function stopPendingActionsSweeper(): void {
+  if (sweepTimer) { clearInterval(sweepTimer); sweepTimer = null; }
+}

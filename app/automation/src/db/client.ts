@@ -10,12 +10,32 @@ function isDbConfigured(): boolean {
 export function getPool(): Pool {
   if (!_pool) {
     if (!isDbConfigured()) throw new Error('DATABASE_URL not set');
-    _pool = new Pool({ connectionString: config.databaseUrl });
+    _pool = new Pool({
+      connectionString: config.databaseUrl,
+      // Bounded pool — prevents "remaining connection slots are reserved"
+      // under spike. Railway Postgres allows ~50 connections; reserve 5 for
+      // admin/migrations, give ourselves 20, leave headroom for multi-instance.
+      max:                     20,
+      // Recycle idle conns every 30s so we don't sit on stale ones
+      idleTimeoutMillis:       30_000,
+      // Fail fast if Postgres is overloaded
+      connectionTimeoutMillis: 5_000,
+      // Cap each query at 30s — anything slower is a bug
+      statement_timeout:       30_000,
+    });
     _pool.on('error', (err) => {
       console.error('[DB] Unexpected pool error', err);
     });
   }
   return _pool;
+}
+
+/** Close the pool gracefully — call from SIGTERM handler. */
+export async function closePool(): Promise<void> {
+  if (_pool) {
+    try { await _pool.end(); } catch (err) { console.error('[DB] pool.end() failed:', err); }
+    _pool = null;
+  }
 }
 
 export async function query<T = unknown>(sql: string, params?: unknown[]): Promise<T[]> {
