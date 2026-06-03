@@ -1053,8 +1053,9 @@ router.get('/ai-analytics', requireAdmin, async (_req: Request, res: Response, n
 
     // Fetch observations (token-level) and traces (sessionId) in parallel
     const [obsRes, tracesRes] = await Promise.all([
-      fetch(`${base}/api/public/observations?type=GENERATION&fromStartTime=${fromParam}&limit=500`, { headers }),
-      fetch(`${base}/api/public/traces?fromTimestamp=${fromParam}&limit=200`, { headers }),
+      // Langfuse caps page size at 100; if you need more we can paginate later
+      fetch(`${base}/api/public/observations?type=GENERATION&fromStartTime=${fromParam}&limit=100`, { headers }),
+      fetch(`${base}/api/public/traces?fromTimestamp=${fromParam}&limit=100`, { headers }),
     ]);
 
     if (!obsRes.ok || !tracesRes.ok) {

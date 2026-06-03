@@ -185,6 +185,10 @@ export default function PortalChatPage({ token, onLogout, onShowHistory, onShowA
         // Per-portal completion → append the quote card
         if (event.type === 'quote_complete' && event.result) {
           setQuoteResults(prev => [...(prev ?? []), event.result]);
+          // Trigger immediate refresh of the 🚨 failed-quote pill if this attempt failed
+          if (event.result?.success === false) {
+            window.dispatchEvent(new Event('failures-may-have-changed'));
+          }
         }
         // Captcha challenge for this portal
         if (event.type === 'captcha_required' && event.result) {
@@ -199,6 +203,8 @@ export default function PortalChatPage({ token, onLogout, onShowHistory, onShowA
         if (event.type === 'all_complete') {
           setQuoteRunning(false);
           sse.close(); progressRef.current = null;
+          // Final refresh of the pill so any straggling failure is reflected
+          window.dispatchEvent(new Event('failures-may-have-changed'));
         }
       } catch { /* ignore */ }
     };
@@ -465,7 +471,8 @@ export default function PortalChatPage({ token, onLogout, onShowHistory, onShowA
 
           {/* Results */}
           {quoteResults && quoteResults.map((r: any, i: number) => (
-            <QuoteResultCard key={i} result={r} onProceed={proceedBuy} paymentState={paymentByPortal[r.portalId]} />
+            <QuoteResultCard key={i} result={r} onProceed={proceedBuy} paymentState={paymentByPortal[r.portalId]}
+              onTakeOver={isAdmin && r.success === false && onShowAdmin ? onShowAdmin : undefined} />
           ))}
 
           {captchaState && (
@@ -595,8 +602,19 @@ function Header({ title, onLogout, onReset, onHistory, onAdmin, showAdmin, token
       } catch { /* silent */ }
     }
     poll();
-    const t = setInterval(poll, 30_000);
-    return () => { cancelled = true; clearInterval(t); };
+    // 10 s during active sessions — fast enough to feel live
+    const t = setInterval(poll, 10_000);
+    // Also refresh immediately on a custom event (e.g. when a quote fails)
+    const refresh = () => poll();
+    window.addEventListener('failures-may-have-changed', refresh);
+    // Refresh when tab regains focus (browser-tab switch case)
+    document.addEventListener('visibilitychange', refresh);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+      window.removeEventListener('failures-may-have-changed', refresh);
+      document.removeEventListener('visibilitychange', refresh);
+    };
   }, [showAdmin, token]);
 
   return (
@@ -666,10 +684,11 @@ function ConfirmationCard({ fields, onRunQuotes, running, done }: {
   );
 }
 
-function QuoteResultCard({ result, onProceed, paymentState }: {
+function QuoteResultCard({ result, onProceed, paymentState, onTakeOver }: {
   result:        any;
   onProceed?:    (portalId: string) => void;
   paymentState?: { status: 'idle' | 'loading' | 'done' | 'error'; paymentUrl?: string; confirmationNumber?: string; errorMessage?: string };
+  onTakeOver?:   () => void;
 }) {
   const success = result.success;
   const ps = paymentState ?? { status: 'idle' as const };
@@ -769,7 +788,15 @@ function QuoteResultCard({ result, onProceed, paymentState }: {
             )}
           </>
         ) : (
-          <div style={qr.error}>{result.errorMessage ?? 'Quote generation failed'}</div>
+          <>
+            <div style={qr.error}>{result.errorMessage ?? 'Quote generation failed'}</div>
+            {onTakeOver && (
+              <button onClick={onTakeOver}
+                style={{ marginTop: 12, width: '100%', background: '#1a56db', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 14px', fontSize: 14, fontWeight: 700, cursor: 'pointer' }}>
+                🛠 Take Over (Cookie Handoff)
+              </button>
+            )}
+          </>
         )}
       </div>
     </div>
