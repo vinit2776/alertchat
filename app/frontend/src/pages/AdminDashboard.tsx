@@ -805,7 +805,15 @@ function TakeOverModal({ token, quote, portalUrl, onClose, onSaved }: {
 
           {error && <div style={{ ...s.error, marginTop: 12 }}>{error}</div>}
 
-          <div style={{ display: 'flex', gap: 8, marginTop: 16, justifyContent: 'space-between', alignItems: 'center' }}>
+          {/* Manual cookie paste fallback — for testing without the extension */}
+          {handoffId && stage3.status !== 'ok' && stage3.status !== 'active' && (
+            <details style={{ marginTop: 12, fontSize: 12, color: '#475569', background: '#f8fafc', padding: '10px 12px', borderRadius: 8, border: '1px dashed #cbd5e0' }}>
+              <summary style={{ cursor: 'pointer', fontWeight: 600 }}>📋 Paste cookies manually (no extension)</summary>
+              <PasteCookiesFallback token={token} handoffId={handoffId} portalId={quote.portal_id} />
+            </details>
+          )}
+
+          <div style={{ display: 'flex', gap: 8, marginTop: 12, justifyContent: 'space-between', alignItems: 'center' }}>
             <details style={{ fontSize: 11, color: '#64748b' }}>
               <summary style={{ cursor: 'pointer' }}>Enter premium manually instead</summary>
               <ManualEntryFallback token={token} quote={quote} onSaved={onSaved} />
@@ -818,6 +826,107 @@ function TakeOverModal({ token, quote, portalUrl, onClose, onSaved }: {
             </div>
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/** Lets the admin paste a raw Cookie header (or cookies-as-JSON) into the modal
+ *  to drive the replay without installing the Chrome extension. */
+function PasteCookiesFallback({ token, handoffId, portalId }: {
+  token: string; handoffId: string; portalId: string;
+}) {
+  const [raw, setRaw]   = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg]   = useState('');
+
+  const portalDomain: Record<string, string> = {
+    uiic:        '.uiic.in',
+    iciclombard: '.iciclombard.com',
+    tataaig:     '.tataaig.com',
+    bajaj:       '.bajajallianz.com',
+    hdfcergo:    '.hdfcergo.com',
+    newindia:    '.newindia.co.in',
+  };
+  const domain = portalDomain[portalId] ?? `.${portalId}.in`;
+
+  function parseCookies(input: string): { name: string; value: string }[] {
+    const text = input.trim();
+    if (!text) return [];
+    // Try JSON array first (e.g. DevTools "Copy value" or extension export)
+    if (text.startsWith('[') || text.startsWith('{')) {
+      try {
+        const parsed = JSON.parse(text);
+        const arr   = Array.isArray(parsed) ? parsed : [parsed];
+        return arr
+          .filter((c: any) => c && c.name && c.value != null)
+          .map((c: any) => ({ name: String(c.name), value: String(c.value) }));
+      } catch { /* fall through to header parse */ }
+    }
+    // Otherwise treat as raw Cookie header: "a=1; b=2; c=3"
+    return text.split(/;\s*/)
+      .map(p => p.trim())
+      .filter(Boolean)
+      .map(p => {
+        const eq = p.indexOf('=');
+        return { name: p.slice(0, eq).trim(), value: p.slice(eq + 1).trim() };
+      })
+      .filter(c => c.name);
+  }
+
+  async function send() {
+    const pairs = parseCookies(raw);
+    if (pairs.length === 0) { setMsg('No cookies parsed — paste failed.'); return; }
+
+    setBusy(true); setMsg(`Sending ${pairs.length} cookies…`);
+    try {
+      const cookies = pairs.map(p => ({
+        name:     p.name,
+        value:    p.value,
+        domain,
+        path:     '/',
+        expires:  -1,
+        httpOnly: false,    // Playwright doesn't enforce on sending — safe default
+        secure:   true,
+        sameSite: 'Lax' as const,
+      }));
+
+      const res  = await fetch(`${autoBase}/api/admin/portal-sessions`, {
+        method:  'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ handoffId, portalId, cookies }),
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.message);
+      setMsg(`✓ Sent ${cookies.length} cookies — watch the stages above for replay status.`);
+      setRaw('');
+    } catch (e: any) {
+      setMsg(`Failed: ${e.message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div style={{ marginTop: 8 }}>
+      <ol style={{ fontSize: 11, color: '#475569', paddingLeft: 18, lineHeight: 1.7, marginBottom: 8 }}>
+        <li>In your portal tab, open DevTools (F12) → <b>Network</b> tab</li>
+        <li>Click any request to <code>{domain.replace('.', '')}</code></li>
+        <li>Find <b>Request Headers</b> → <code>Cookie:</code> → right-click → <b>Copy value</b></li>
+        <li>Paste the raw <code>name=value; name=value</code> string below</li>
+      </ol>
+      <textarea
+        value={raw}
+        onChange={e => setRaw(e.target.value)}
+        placeholder={`JSESSIONID=abc...; otherCookie=xyz; …`}
+        style={{ width: '100%', minHeight: 80, fontFamily: 'monospace', fontSize: 11, padding: 8, border: '1.5px solid #cbd5e0', borderRadius: 6, boxSizing: 'border-box' }}
+      />
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 6 }}>
+        <button onClick={send} disabled={busy || !raw.trim()}
+          style={{ background: '#1a56db', color: '#fff', border: 'none', borderRadius: 6, padding: '6px 14px', fontSize: 12, fontWeight: 600, cursor: 'pointer', opacity: busy || !raw.trim() ? 0.5 : 1 }}>
+          {busy ? 'Sending…' : '📤 Send cookies'}
+        </button>
+        {msg && <span style={{ fontSize: 11, color: msg.startsWith('✓') ? '#065f46' : '#dc2626' }}>{msg}</span>}
       </div>
     </div>
   );
