@@ -1,0 +1,29 @@
+{
+  "portal_id": "oriental_motor",
+  "name": "Oriental Insurance Company Limited — Motor",
+  "base_url": "https://orientalinsurance.org.in",
+  "insurance_type": "motor",
+
+  "_note": "Login is a modal dialog triggered from the homepage header. Captcha is a canvas-rendered text image (canvas.captcha-canvas). No OTP observed — just username + password + text captcha. Use the Live Browser capture in the admin UI to log in manually. Quote flow to be mapped after first successful session capture.",
+
+  "login": {
+    "url": "/",
+    "trigger_selector": "#login-btn.header-login-btn",
+    "username_field": "#username",
+    "password_field": "#password",
+    "submit": "#continue-btn",
+    "success_indicator": ".user-profile-name, .agent-name, #logout-btn, .logout, [class*='user-info'], [class*='agent-dashboard'], nav [class*='profile']",
+    "dismiss_modals": [
+      "button[aria-label='Close']"
+    ],
+    "captcha": {
+      "image_selector": "canvas.captcha-canvas",
+      "input_selector": "#captcha",
+      "refresh_selector": "button.captcha-refresh, button[title*='refresh'], button[title*='Refresh']"
+    }
+  },
+
+  "quote_flow": [],
+
+  "_status": "login_only — quote_flow to be mapped after live browser session capture"
+}
