@@ -9,7 +9,8 @@ import historyRoutes  from './routes/history.routes';
 import adminRoutes    from './routes/admin.routes';
 import quoteRoutes    from './routes/quote.routes';
 import usersRoutes    from './routes/users.routes';
-import wizardRoutes   from './routes/wizard.routes';
+import wizardRoutes       from './routes/wizard.routes';
+import liveBrowserRoutes  from './routes/live-browser.routes';
 import { globalLimit, loginLimit, uploadLimit, quoteLimit, wizardLimit } from './middleware/rate-limit';
 import { browserPool } from './session/pool';
 import { query, queryOne, closePool } from './db/client';
@@ -54,7 +55,8 @@ app.use('/api/chat',      chatRoutes);
 app.use('/api/wizard',    wizardRoutes);
 app.use('/api/documents', documentRoutes);
 app.use('/api/history',   historyRoutes);
-app.use('/api/admin',     adminRoutes);
+app.use('/api/admin',        adminRoutes);
+app.use('/api/admin/live-browser', liveBrowserRoutes);
 app.use('/api/quotes',    quoteRoutes);
 
 app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

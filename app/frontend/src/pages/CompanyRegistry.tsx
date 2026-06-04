@@ -8,7 +8,7 @@
  *   - Type-specific action buttons
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 
 const autoBase = (import.meta as any).env.VITE_AUTOMATION_URL || 'http://localhost:4001';
 
@@ -18,6 +18,13 @@ interface CacheStatus {
   refreshedAt:  string;
   entryCount:   number;
   staleHours:   number;
+}
+
+interface SessionStatus {
+  portalId:   string;
+  sessionId:  string | null;
+  capturedAt: string | null;
+  lastUsedAt: string | null;
 }
 
 interface Company {
@@ -32,7 +39,10 @@ interface Company {
   credentialsConfigured: boolean;
   credentialNote:        string | null;
   cacheStatus:           CacheStatus | null;
+  sessionStatus:         SessionStatus | null;
 }
+
+interface CredForm { username: string; password: string; agentCode: string; branchCode: string }
 
 interface Props { token: string; onBack: () => void }
 
@@ -55,6 +65,15 @@ export default function CompanyRegistry({ token, onBack }: Props) {
   const [testing,     setTesting]     = useState<string | null>(null);
   const [refreshing,  setRefreshing]  = useState<string | null>(null);
   const [actionMsg,   setActionMsg]   = useState<Record<string, { ok: boolean; text: string }>>({});
+
+  // Live browser login capture modal
+  const [liveModal, setLiveModal] = useState<{ id: string; name: string } | null>(null);
+
+  // Credential modal
+  const [credModal, setCredModal] = useState<{ id: string; name: string } | null>(null);
+  const [credForm,  setCredForm]  = useState<CredForm>({ username: '', password: '', agentCode: '', branchCode: '' });
+  const [credSaving, setCredSaving] = useState(false);
+  const [credMsg,    setCredMsg]    = useState<{ ok: boolean; text: string } | null>(null);
 
   const setMsg = (id: string, ok: boolean, text: string) =>
     setActionMsg(prev => ({ ...prev, [id]: { ok, text } }));
@@ -127,6 +146,47 @@ export default function CompanyRegistry({ token, onBack }: Props) {
     finally { setTesting(null); }
   }
 
+  function openCredModal(id: string, name: string) {
+    setCredForm({ username: '', password: '', agentCode: '', branchCode: '' });
+    setCredMsg(null);
+    setCredModal({ id, name });
+  }
+
+  async function saveCredentials() {
+    if (!credModal) return;
+    if (!credForm.username || !credForm.password) {
+      setCredMsg({ ok: false, text: 'Username and password are required' });
+      return;
+    }
+    setCredSaving(true); setCredMsg(null);
+    try {
+      const res  = await fetch(`${autoBase}/api/admin/companies/${credModal.id}/credentials`, {
+        method:  'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body:    JSON.stringify(credForm),
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.message);
+      setCredMsg({ ok: true, text: 'Credentials saved and encrypted successfully' });
+      setTimeout(() => { setCredModal(null); load(); }, 1200);
+    } catch (err: any) {
+      setCredMsg({ ok: false, text: err.message });
+    } finally { setCredSaving(false); }
+  }
+
+  async function deleteCredentials(id: string) {
+    if (!confirm('Remove saved credentials for this portal? You will need to re-enter them to run quotes.')) return;
+    try {
+      const res  = await fetch(`${autoBase}/api/admin/companies/${id}/credentials`, {
+        method: 'DELETE', headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.message);
+      setMsg(id, true, 'Credentials removed');
+      load();
+    } catch (err: any) { setMsg(id, false, err.message); }
+  }
+
   async function refreshBajajCache(id: string) {
     setRefreshing(id); setMsg(id, true, 'Fetching vehicle master from Bajaj API…');
     try {
@@ -146,6 +206,78 @@ export default function CompanyRegistry({ token, onBack }: Props) {
 
   return (
     <div style={s.shell}>
+      {/* Live browser login capture modal */}
+      {liveModal && (
+        <LiveBrowserModal
+          token={token}
+          portalId={liveModal.id}
+          portalName={liveModal.name}
+          onClose={() => { setLiveModal(null); load(); }}
+        />
+      )}
+
+      {/* Credential modal */}
+      {credModal && (
+        <div style={s.overlay} onClick={() => setCredModal(null)}>
+          <div style={s.modal} onClick={e => e.stopPropagation()}>
+            <div style={s.modalHeader}>
+              <span>Set Credentials — {credModal.name}</span>
+              <button style={s.modalClose} onClick={() => setCredModal(null)}>✕</button>
+            </div>
+            <div style={s.modalBody}>
+              <p style={s.modalNote}>
+                Credentials are encrypted with AES-256-GCM before storage. They are never returned via the API.
+              </p>
+              {(['username', 'password', 'agentCode', 'branchCode'] as const).map(field => (
+                <div key={field} style={s.fieldRow}>
+                  <label style={s.fieldLabel}>
+                    {field === 'agentCode' ? 'Agent Code (optional)' :
+                     field === 'branchCode' ? 'Branch Code (optional)' :
+                     field.charAt(0).toUpperCase() + field.slice(1)}
+                    {(field === 'username' || field === 'password') && (
+                      <span style={{ color: '#dc2626' }}> *</span>
+                    )}
+                  </label>
+                  <input
+                    type={field === 'password' ? 'password' : 'text'}
+                    value={credForm[field]}
+                    onChange={e => setCredForm(prev => ({ ...prev, [field]: e.target.value }))}
+                    placeholder={
+                      field === 'username'   ? 'Portal login username' :
+                      field === 'password'   ? 'Portal login password' :
+                      field === 'agentCode'  ? 'e.g. BRC000025200004' :
+                      'e.g. AP1234'
+                    }
+                    style={s.fieldInput}
+                    autoComplete={field === 'password' ? 'new-password' : 'off'}
+                  />
+                </div>
+              ))}
+              {credMsg && (
+                <div style={{
+                  ...s.credMsg,
+                  background:  credMsg.ok ? '#f0fdf4' : '#fef2f2',
+                  color:       credMsg.ok ? '#15803d' : '#dc2626',
+                  borderColor: credMsg.ok ? '#bbf7d0' : '#fecaca',
+                }}>
+                  {credMsg.text}
+                </div>
+              )}
+              <div style={s.modalActions}>
+                <button style={s.modalCancel} onClick={() => setCredModal(null)}>Cancel</button>
+                <button
+                  style={{ ...s.modalSave, opacity: credSaving ? 0.7 : 1 }}
+                  onClick={saveCredentials}
+                  disabled={credSaving}
+                >
+                  {credSaving ? 'Saving…' : 'Save & Encrypt'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <div style={s.header}>
         <button style={s.backBtn} onClick={onBack}>← Back</button>
@@ -188,6 +320,9 @@ export default function CompanyRegistry({ token, onBack }: Props) {
                 onTestPortal={() => testPortalLogin(c.id)}
                 onTestApi={() => testBajajApi(c.id)}
                 onRefreshCache={() => refreshBajajCache(c.id)}
+                onSetCredentials={() => openCredModal(c.id, c.name)}
+                onDeleteCredentials={() => deleteCredentials(c.id)}
+                onOpenLiveBrowser={() => setLiveModal({ id: c.id, name: c.name })}
               />
             ))}
           </div>
@@ -221,15 +356,18 @@ interface CardProps {
   testing:    boolean;
   refreshing: boolean;
   actionMsg?: { ok: boolean; text: string };
-  onToggle:        (v: boolean) => void;
-  onTestPortal:    () => void;
-  onTestApi:       () => void;
-  onRefreshCache:  () => void;
+  onToggle:            (v: boolean) => void;
+  onTestPortal:        () => void;
+  onTestApi:           () => void;
+  onRefreshCache:      () => void;
+  onSetCredentials:    () => void;
+  onDeleteCredentials: () => void;
+  onOpenLiveBrowser:   () => void;
 }
 
 function CompanyCard({
   company: c, toggling, testing, refreshing, actionMsg,
-  onToggle, onTestPortal, onTestApi, onRefreshCache,
+  onToggle, onTestPortal, onTestApi, onRefreshCache, onSetCredentials, onDeleteCredentials, onOpenLiveBrowser,
 }: CardProps) {
   const meta  = CONNECTOR_META[c.connectorType] ?? CONNECTOR_META.portal;
   const isApi = c.connectorType === 'api';
@@ -301,6 +439,15 @@ function CompanyCard({
           </>
         ) : (
           <>
+            {/* Portal: credentials */}
+            <StatusRow
+              label="Credentials"
+              value={c.credentialsConfigured ? 'Configured' : 'Not set'}
+              ok={c.credentialsConfigured}
+              note={!c.credentialsConfigured ? 'Click "Set Credentials" to add portal login' : undefined}
+            />
+            {/* Portal: session memory */}
+            <SessionMemoryRow session={c.sessionStatus} />
             {/* Portal: playbook version */}
             <StatusRow
               label="Playbook"
@@ -314,7 +461,7 @@ function CompanyCard({
                 ? new Date(c.lastTestedAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
                 : 'Never'}
               ok={!!c.lastTestedAt}
-              note={!c.lastTestedAt ? 'Run "Test Login" to verify credentials' : undefined}
+              note={!c.lastTestedAt ? 'Run "Test Login" to verify credentials work' : undefined}
             />
           </>
         )}
@@ -355,13 +502,39 @@ function CompanyCard({
             )}
           </>
         ) : (
-          <ActionBtn
-            label={testing ? 'Testing…' : 'Test Login'}
-            icon="🔑"
-            disabled={testing}
-            onClick={onTestPortal}
-            title="Log into portal and verify the session works"
-          />
+          <>
+            <ActionBtn
+              label={c.sessionStatus?.sessionId ? 'Re-Login' : 'Login & Capture'}
+              icon="🖥"
+              disabled={false}
+              onClick={onOpenLiveBrowser}
+              primary={!c.sessionStatus?.sessionId}
+              title="Open interactive browser — log in manually to capture your session"
+            />
+            <ActionBtn
+              label="Set Credentials"
+              icon="🔐"
+              disabled={false}
+              onClick={onSetCredentials}
+              title="Store portal username and password (encrypted)"
+            />
+            <ActionBtn
+              label={testing ? 'Testing…' : 'Test Login'}
+              icon="🔑"
+              disabled={testing}
+              onClick={onTestPortal}
+              title="Test login using saved credentials"
+            />
+            {c.credentialsConfigured && (
+              <ActionBtn
+                label="Clear"
+                icon="🗑"
+                disabled={false}
+                onClick={onDeleteCredentials}
+                title="Remove saved credentials from the vault"
+              />
+            )}
+          </>
         )}
       </div>
     </div>
@@ -413,6 +586,56 @@ function StatusRow({ label, value, ok, warn, note }: {
   );
 }
 
+function SessionMemoryRow({ session }: { session: SessionStatus | null }) {
+  const fmt = (iso: string) => {
+    const d = new Date(iso);
+    const now = Date.now();
+    const diff = now - d.getTime();
+    const mins  = Math.floor(diff / 60_000);
+    const hours = Math.floor(diff / 3_600_000);
+    const days  = Math.floor(diff / 86_400_000);
+    if (mins < 60)  return `${mins}m ago`;
+    if (hours < 24) return `${hours}h ago`;
+    return `${days}d ago`;
+  };
+
+  if (!session?.sessionId) {
+    return (
+      <div style={card.statusRow}>
+        <span style={card.statusLabel}>Session memory</span>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ ...card.statusDot, background: '#f59e0b' }} />
+            <span style={{ fontSize: 13, color: '#1f2937', fontWeight: 500 }}>Not built</span>
+          </span>
+          <span style={card.statusNote}>Run "Test Login" to capture a session</span>
+        </div>
+      </div>
+    );
+  }
+
+  const capturedStr = session.capturedAt ? fmt(session.capturedAt) : '—';
+  const usedStr     = session.lastUsedAt ? fmt(session.lastUsedAt) : 'never used';
+  const capturedFull = session.capturedAt
+    ? new Date(session.capturedAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })
+    : '';
+
+  return (
+    <div style={card.statusRow}>
+      <span style={card.statusLabel}>Session memory</span>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ ...card.statusDot, background: '#16a34a' }} />
+          <span style={{ fontSize: 13, color: '#1f2937', fontWeight: 500 }}>Built {capturedStr}</span>
+        </span>
+        <span style={card.statusNote} title={capturedFull}>
+          Captured {capturedFull} · last used {usedStr}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function ActionBtn({ label, icon, disabled, onClick, primary, title }: {
   label: string; icon: string; disabled: boolean; onClick: () => void; primary?: boolean; title?: string;
 }) {
@@ -436,6 +659,202 @@ function ActionBtn({ label, icon, disabled, onClick, primary, title }: {
   );
 }
 
+// ── Live Browser Modal ────────────────────────────────────────────────────────
+
+const VIEWPORT_W = 1280;
+const VIEWPORT_H = 800;
+
+interface LiveBrowserProps {
+  token:      string;
+  portalId:   string;
+  portalName: string;
+  onClose:    () => void;
+}
+
+function LiveBrowserModal({ token, portalId, portalName, onClose }: LiveBrowserProps) {
+  const [sessionId,  setSessionId]  = useState<string | null>(null);
+  const [screenshot, setScreenshot] = useState<string | null>(null);
+  const [status,     setStatus]     = useState('Opening browser…');
+  const [captured,   setCaptured]   = useState(false);
+  const [error,      setError]      = useState('');
+  const imgRef    = useRef<HTMLImageElement>(null);
+  const sseRef    = useRef<EventSource | null>(null);
+  const sessionRef = useRef<string | null>(null);
+
+  const apiPost = useCallback(async (path: string, body: unknown) => {
+    return fetch(`${autoBase}/api/admin/live-browser${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify(body),
+    }).then(r => r.json());
+  }, [token]);
+
+  // Start session on mount
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setStatus('Opening portal browser…');
+      try {
+        const data = await apiPost('/start', { portalId });
+        if (cancelled) return;
+        if (!data.success) { setError(data.message || 'Failed to start browser'); return; }
+        setSessionId(data.sessionId);
+        sessionRef.current = data.sessionId;
+        if (data.screenshot) setScreenshot(data.screenshot);
+        setStatus('Browser ready — log in below');
+      } catch (err: any) {
+        if (!cancelled) setError(err.message);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [portalId, apiPost]);
+
+  // Open SSE stream once sessionId is known
+  useEffect(() => {
+    if (!sessionId) return;
+    const es = new EventSource(
+      `${autoBase}/api/admin/live-browser/${sessionId}/stream?token=${encodeURIComponent(token)}`,
+    );
+    sseRef.current = es;
+
+    es.onmessage = (e: MessageEvent) => {
+      const evt = JSON.parse(e.data);
+      if (evt.type === 'frame') {
+        setScreenshot(evt.image);
+      } else if (evt.type === 'session_captured') {
+        setCaptured(true);
+        setStatus(`✓ ${evt.message}`);
+        es.close();
+      } else if (evt.type === 'session_closed') {
+        if (!captured) setStatus(`Session closed (${evt.reason})`);
+        es.close();
+      }
+    };
+
+    es.onerror = () => setStatus('Stream interrupted — actions still work');
+
+    return () => { es.close(); };
+  }, [sessionId, captured]);
+
+  // Close live browser on unmount
+  useEffect(() => {
+    return () => {
+      if (sessionRef.current) {
+        fetch(`${autoBase}/api/admin/live-browser/${sessionRef.current}`, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${token}` },
+        }).catch(() => {});
+      }
+    };
+  }, [token]);
+
+  // Map click on displayed image → viewport coordinates → POST to backend
+  async function handleImageClick(e: React.MouseEvent<HTMLImageElement>) {
+    if (!sessionId || captured) return;
+    const rect = imgRef.current!.getBoundingClientRect();
+    const scaleX = VIEWPORT_W / rect.width;
+    const scaleY = VIEWPORT_H / rect.height;
+    const x = Math.round((e.clientX - rect.left) * scaleX);
+    const y = Math.round((e.clientY - rect.top)  * scaleY);
+    const data = await apiPost(`/${sessionId}/click`, { x, y });
+    if (data.screenshot) setScreenshot(data.screenshot);
+  }
+
+  // Keyboard: capture when overlay div is focused
+  async function handleKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
+    if (!sessionId || captured) return;
+    e.preventDefault();
+
+    // Map common keys to Playwright key names
+    const KEY_MAP: Record<string, string> = {
+      Enter: 'Enter', Tab: 'Tab', Backspace: 'Backspace', Delete: 'Delete',
+      Escape: 'Escape', ArrowLeft: 'ArrowLeft', ArrowRight: 'ArrowRight',
+      ArrowUp: 'ArrowUp', ArrowDown: 'ArrowDown', Home: 'Home', End: 'End',
+    };
+
+    if (e.key in KEY_MAP) {
+      const data = await apiPost(`/${sessionId}/key`, { key: KEY_MAP[e.key] });
+      if (data.screenshot) setScreenshot(data.screenshot);
+    } else if (e.key.length === 1) {
+      const data = await apiPost(`/${sessionId}/type`, { text: e.key });
+      if (data.screenshot) setScreenshot(data.screenshot);
+    }
+  }
+
+  return (
+    <div style={lb.overlay}>
+      <div style={lb.modal}>
+        {/* Header */}
+        <div style={lb.header}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <span style={{ fontWeight: 700, fontSize: 15 }}>
+              {captured ? '✓ Session Captured' : `Login — ${portalName}`}
+            </span>
+            <span style={{ fontSize: 12, color: captured ? '#86efac' : 'rgba(255,255,255,0.7)' }}>
+              {status}
+            </span>
+          </div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            {captured && (
+              <button style={lb.doneBtn} onClick={onClose}>Done</button>
+            )}
+            <button style={lb.closeBtn} onClick={onClose} title="Close">✕</button>
+          </div>
+        </div>
+
+        {/* Instruction bar */}
+        {!captured && !error && (
+          <div style={lb.instructions}>
+            <span>🖱 Click to interact</span>
+            <span style={{ margin: '0 12px', color: '#cbd5e1' }}>·</span>
+            <span>⌨️ Click the browser first, then type</span>
+            <span style={{ margin: '0 12px', color: '#cbd5e1' }}>·</span>
+            <span>Session captures automatically after login</span>
+          </div>
+        )}
+
+        {/* Browser viewport */}
+        <div
+          style={lb.viewport}
+          tabIndex={0}
+          onKeyDown={handleKeyDown}
+          title="Click to focus keyboard input"
+        >
+          {error ? (
+            <div style={lb.errorMsg}>{error}</div>
+          ) : screenshot ? (
+            <img
+              ref={imgRef}
+              src={`data:image/jpeg;base64,${screenshot}`}
+              style={{
+                width: '100%', height: '100%', objectFit: 'contain',
+                cursor: captured ? 'default' : 'crosshair',
+                display: 'block',
+              }}
+              onClick={handleImageClick}
+              alt="Portal browser"
+              draggable={false}
+            />
+          ) : (
+            <div style={lb.loadingMsg}>
+              <span style={{ fontSize: 32, marginBottom: 12 }}>⏳</span>
+              Opening browser…
+            </div>
+          )}
+          {captured && (
+            <div style={lb.capturedOverlay}>
+              <span style={{ fontSize: 40 }}>✓</span>
+              <span style={{ fontSize: 18, fontWeight: 700 }}>Session Captured</span>
+              <span style={{ fontSize: 13, color: '#86efac', textAlign: 'center' }}>{status}</span>
+              <button style={lb.doneBtn} onClick={onClose}>Close & Refresh</button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Styles ────────────────────────────────────────────────────────────────────
 
 const s: Record<string, React.CSSProperties> = {
@@ -454,6 +873,39 @@ const s: Record<string, React.CSSProperties> = {
   legendItem:  {},
   legendNote:  { fontSize: 12, color: '#94a3b8', marginLeft: 4 },
   typeBadge:   { display: 'inline-flex', alignItems: 'center', gap: 4, padding: '3px 10px', borderRadius: 6, fontSize: 12, fontWeight: 600 },
+
+  // Credential modal
+  overlay:      { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100 },
+  modal:        { background: '#fff', borderRadius: 16, width: 460, maxWidth: '92vw', boxShadow: '0 8px 40px rgba(0,0,0,0.18)', display: 'flex', flexDirection: 'column' },
+  modalHeader:  { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '18px 22px 14px', borderBottom: '1px solid #f3f4f6', fontWeight: 700, fontSize: 16, color: '#111827' },
+  modalClose:   { background: 'none', border: 'none', fontSize: 18, cursor: 'pointer', color: '#6b7280', padding: '2px 6px', borderRadius: 6 },
+  modalBody:    { padding: '20px 22px', display: 'flex', flexDirection: 'column', gap: 14 },
+  modalNote:    { margin: 0, fontSize: 12, color: '#6b7280', background: '#f8fafc', borderRadius: 8, padding: '10px 12px', lineHeight: 1.5 },
+  fieldRow:     { display: 'flex', flexDirection: 'column', gap: 5 },
+  fieldLabel:   { fontSize: 13, fontWeight: 600, color: '#374151' },
+  fieldInput:   { border: '1px solid #d1d5db', borderRadius: 8, padding: '8px 12px', fontSize: 14, outline: 'none', fontFamily: 'inherit' },
+  credMsg:      { borderRadius: 8, padding: '8px 12px', fontSize: 13, fontWeight: 500, border: '1px solid' },
+  modalActions: { display: 'flex', justifyContent: 'flex-end', gap: 10, paddingTop: 4 },
+  modalCancel:  { background: '#f3f4f6', border: 'none', borderRadius: 8, padding: '8px 18px', cursor: 'pointer', fontSize: 14, color: '#374151', fontWeight: 500 },
+  modalSave:    { background: '#1a5276', border: 'none', borderRadius: 8, padding: '8px 20px', cursor: 'pointer', fontSize: 14, color: '#fff', fontWeight: 600 },
+};
+
+// Live browser modal styles
+const lb: Record<string, React.CSSProperties> = {
+  overlay:  { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.72)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 },
+  modal:    { background: '#0f172a', borderRadius: 14, display: 'flex', flexDirection: 'column', width: '90vw', maxWidth: 1000, maxHeight: '94vh', boxShadow: '0 24px 80px rgba(0,0,0,0.6)', overflow: 'hidden' },
+  header:   { background: '#1e293b', padding: '12px 18px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0, borderBottom: '1px solid #334155' },
+  instructions: { background: '#1e3a5f', padding: '8px 18px', fontSize: 12, color: '#93c5fd', display: 'flex', alignItems: 'center', flexShrink: 0 },
+  viewport: { flex: 1, position: 'relative', overflow: 'hidden', background: '#000', minHeight: 400, display: 'flex', alignItems: 'center', justifyContent: 'center', outline: 'none', cursor: 'crosshair' },
+  loadingMsg: { display: 'flex', flexDirection: 'column', alignItems: 'center', color: '#94a3b8', fontSize: 14, gap: 4 },
+  errorMsg:   { color: '#f87171', padding: 24, textAlign: 'center', fontSize: 14 },
+  capturedOverlay: {
+    position: 'absolute', inset: 0, background: 'rgba(0,30,0,0.85)',
+    display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+    gap: 12, color: '#4ade80', fontSize: 14,
+  },
+  closeBtn: { background: 'rgba(255,255,255,0.1)', border: 'none', borderRadius: 6, color: '#fff', padding: '4px 10px', cursor: 'pointer', fontSize: 16 },
+  doneBtn:  { background: '#16a34a', border: 'none', borderRadius: 8, color: '#fff', padding: '8px 20px', cursor: 'pointer', fontSize: 14, fontWeight: 700 },
 };
 
 const card: Record<string, React.CSSProperties> = {

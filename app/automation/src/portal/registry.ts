@@ -2,12 +2,33 @@ import { query, queryOne } from '../db/client';
 import { InsuranceCompany, InsuranceType } from '../types';
 import { listAvailablePlaybooks } from './playbook-runner';
 
-// In-memory fallback used when DATABASE_URL is not set.
-// Populated from playbook files on disk so the service works without a DB.
+// ── Static API-based companies (no playbook file, no browser needed) ─────────
+// These are registered here so they appear in the management UI even when
+// the DB is empty. Credentials are configured via env vars, not the vault.
+const STATIC_API_COMPANIES: InsuranceCompany[] = (() => {
+  const now = new Date().toISOString();
+  return [
+    {
+      id:                  'bajaj',
+      name:                'Bajaj Allianz General Insurance',
+      logoUrl:             '',
+      insuranceTypes:      ['motor'] as InsuranceType[],
+      playbookVersion:     'api-v1',
+      enabled:             false,  // disabled until credentials are configured in .env
+      credentialSecretKey: 'bajaj_api_creds',
+      lastTestedAt:        null,
+      createdAt:           now,
+      updatedAt:           now,
+    },
+  ];
+})();
+
+// ── In-memory fallback (no DATABASE_URL) ─────────────────────────────────────
+// Combines playbook-based portal companies with static API companies.
 function getStaticCompanies(): InsuranceCompany[] {
   const now = new Date().toISOString();
-  return listAvailablePlaybooks()
-    .filter(id => !id.startsWith('_'))  // skip _template
+  const portalCompanies = listAvailablePlaybooks()
+    .filter(id => !id.startsWith('_'))
     .map(id => ({
       id,
       name:                id.toUpperCase().replace(/_/g, ' '),
@@ -20,6 +41,10 @@ function getStaticCompanies(): InsuranceCompany[] {
       createdAt:           now,
       updatedAt:           now,
     }));
+  // Merge: DB API companies fill gaps not covered by playbooks
+  const portalIds = new Set(portalCompanies.map(c => c.id));
+  const apiOnly   = STATIC_API_COMPANIES.filter(c => !portalIds.has(c.id));
+  return [...portalCompanies, ...apiOnly];
 }
 
 export async function getEnabledCompanies(insuranceType?: InsuranceType): Promise<InsuranceCompany[]> {

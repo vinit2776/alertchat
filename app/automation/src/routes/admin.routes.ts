@@ -21,6 +21,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { getConnectorType } from '../connectors/registry';
 import { getCacheStatus, refreshVehicleCache } from '../connectors/bajaj/vehicle-master';
+import { listSessionStatus } from '../portal/session-cache';
 
 let _ai: Anthropic | null = null;
 function getAI() {
@@ -119,12 +120,19 @@ async function loginToPortal(
 // ── Company registry ───────────────────────────────────────────────────────
 
 // GET /api/admin/companies
-// Returns all companies enriched with connector type and credential/cache status.
-router.get('/companies', requireAdmin, async (_req, res, next) => {
+// Returns all companies enriched with connector type, credential/cache status, and session info.
+router.get('/companies', requireAdmin, async (req, res, next) => {
   try {
     const companies = await getAllCompanies();
 
-    const enriched = companies.map(c => {
+    // Fetch portal session status for all portal-type companies in one query
+    const portalIds = companies
+      .filter(c => getConnectorType(c.id) === 'portal')
+      .map(c => c.id);
+    const sessionStatuses = await listSessionStatus(req.user!.sub, portalIds).catch(() => []);
+    const sessionByPortal = new Map(sessionStatuses.map(s => [s.portalId, s]));
+
+    const enriched = await Promise.all(companies.map(async c => {
       const connectorType = getConnectorType(c.id);
 
       // Credential status — for API connectors, check env vars (never expose values)
@@ -138,8 +146,18 @@ router.get('/companies', requireAdmin, async (_req, res, next) => {
             : 'Set BAJAJ_USER_ID and BAJAJ_PASSWORD in .env to activate';
         }
       } else {
-        // Portal: credential in vault — just check it exists
-        credentialsConfigured = true; // vault handles this; test login will surface errors
+        // Portal: check DB vault first, then env var fallback
+        try {
+          const { hasCredentials } = await import('../credentials/db-vault');
+          credentialsConfigured = await hasCredentials(c.id);
+        } catch { credentialsConfigured = false; }
+        if (!credentialsConfigured) {
+          const envKey = `PORTAL_CREDS_${c.id.toUpperCase().replace(/-/g, '_')}`;
+          credentialsConfigured = !!process.env[envKey];
+        }
+        if (!credentialsConfigured) {
+          credentialNote = 'Click "Set Credentials" in the admin panel to configure';
+        }
       }
 
       // Cache status for Bajaj
@@ -148,14 +166,17 @@ router.get('/companies', requireAdmin, async (_req, res, next) => {
         cacheStatus = getCacheStatus();
       }
 
+      const sessionStatus = sessionByPortal.get(c.id) ?? null;
+
       return {
         ...c,
         connectorType,
         credentialsConfigured,
         credentialNote,
         cacheStatus,
+        sessionStatus,
       };
-    });
+    }));
 
     res.json({ success: true, companies: enriched });
   } catch (err) { next(err); }
@@ -1606,6 +1627,61 @@ async function replayQuoteWithSession(opts: {
     if (acquired) await browserPool.release(sessionKey);
   }
 }
+
+// ── Portal credential vault ────────────────────────────────────────────────
+
+// PUT /api/admin/companies/:id/credentials
+// Save (or overwrite) encrypted credentials for a portal.
+router.put('/companies/:id/credentials', requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { username, password, agentCode, branchCode } = req.body as {
+      username: string; password: string; agentCode?: string; branchCode?: string;
+    };
+    if (!username || !password) {
+      res.status(400).json({ success: false, message: 'username and password are required' });
+      return;
+    }
+    if (!process.env.CREDENTIAL_ENCRYPTION_KEY) {
+      res.status(500).json({ success: false, message: 'CREDENTIAL_ENCRYPTION_KEY env var is not set on this server' });
+      return;
+    }
+    const { saveCredentials } = await import('../credentials/db-vault');
+    await saveCredentials(req.params.id, { username, password, agentCode, branchCode });
+    logEvent({
+      userId: req.user!.sub, userEmail: req.user!.email, sessionId: 'admin',
+      action: 'admin_action', outcome: 'success',
+      meta: { action: 'set_credentials', portalId: req.params.id },
+    });
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
+// DELETE /api/admin/companies/:id/credentials
+router.delete('/companies/:id/credentials', requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { deleteCredentials } = await import('../credentials/db-vault');
+    await deleteCredentials(req.params.id);
+    logEvent({
+      userId: req.user!.sub, userEmail: req.user!.email, sessionId: 'admin',
+      action: 'admin_action', outcome: 'success',
+      meta: { action: 'delete_credentials', portalId: req.params.id },
+    });
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
+// GET /api/admin/companies/:id/credentials/status
+router.get('/companies/:id/credentials/status', requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { hasCredentials } = await import('../credentials/db-vault');
+    const inDb = await hasCredentials(req.params.id);
+    const envKey = `PORTAL_CREDS_${req.params.id.toUpperCase().replace(/-/g, '_')}`;
+    const inEnv  = !!process.env[envKey];
+    res.json({ success: true, configured: inDb || inEnv, source: inDb ? 'db' : inEnv ? 'env' : 'none' });
+  } catch (err) { next(err); }
+});
+
+// ── Quote actions ──────────────────────────────────────────────────────────
 
 /** Dismiss a failed quote without entering a premium (e.g. user gave up). */
 router.post('/quotes/:id/dismiss', requireAdmin, async (req: Request, res: Response, next: NextFunction) => {

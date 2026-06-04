@@ -1,6 +1,5 @@
 // Credential vault — fetches portal login credentials securely.
-// Production: reads from AWS Secrets Manager.
-// Development: reads from env var PORTAL_CREDS_<PORTAL_ID> (base64-encoded JSON).
+// Priority: DB vault (admin UI) → env var PORTAL_CREDS_<ID> → AWS Secrets Manager.
 
 export interface PortalCredentials {
   username:    string;
@@ -10,12 +9,18 @@ export interface PortalCredentials {
 }
 
 export async function getCredentials(portalId: string): Promise<PortalCredentials> {
-  // Try AWS Secrets Manager first if configured
-  if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) {
-    return fetchFromSecretsManager(portalId);
+  // 1. DB vault (set via admin UI)
+  if (process.env.DATABASE_URL) {
+    try {
+      const { loadCredentials } = await import('./db-vault');
+      const dbCreds = await loadCredentials(portalId);
+      if (dbCreds) return dbCreds;
+    } catch {
+      // DB not available — fall through
+    }
   }
 
-  // Dev fallback: env var PORTAL_CREDS_<PORTAL_ID> = base64(JSON)
+  // 2. Env var fallback: PORTAL_CREDS_<PORTAL_ID> = base64(JSON)
   const envKey = `PORTAL_CREDS_${portalId.toUpperCase().replace(/-/g, '_')}`;
   const raw    = process.env[envKey];
   if (raw) {
@@ -26,7 +31,15 @@ export async function getCredentials(portalId: string): Promise<PortalCredential
     }
   }
 
-  throw new Error(`No credentials configured for portal: ${portalId}. Set ${envKey} env var or configure AWS Secrets Manager.`);
+  // 3. AWS Secrets Manager
+  if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) {
+    return fetchFromSecretsManager(portalId);
+  }
+
+  throw new Error(
+    `No credentials configured for portal: ${portalId}. ` +
+    `Set them via the admin UI or set ${envKey} env var.`,
+  );
 }
 
 async function fetchFromSecretsManager(portalId: string): Promise<PortalCredentials> {

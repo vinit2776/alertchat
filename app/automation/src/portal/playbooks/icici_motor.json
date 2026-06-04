@@ -1,0 +1,28 @@
+{
+  "portal_id": "icici_motor",
+  "name": "ICICI Lombard General Insurance — Motor",
+  "base_url": "https://nysa.icicilombard.com",
+  "insurance_type": "motor",
+
+  "_note": "NYSA portal. Login requires: username + password + math captcha + OTP (email/mobile). Use the Live Browser capture in the admin UI to log in manually — session is then reused for all quote runs. Quote flow TBD after first successful login exploration.",
+
+  "login": {
+    "url": "/#/login",
+    "username_field": "input[placeholder='Username']",
+    "password_field": "input[placeholder='Password']",
+    "submit": "button.login-btn, button[type='submit']",
+    "success_indicator": "app-dashboard, .dashboard, [class*='dashboard'], nav.sidebar, .nav-menu, #dashboard",
+    "captcha": {
+      "image_selector": "canvas",
+      "input_selector": "input[placeholder='Enter Captcha']"
+    },
+    "otp": {
+      "input_selector": "input[placeholder*='OTP'], input[placeholder*='otp'], input[type='tel'][maxlength]",
+      "submit_selector": "button[type='submit'], button.verify-btn"
+    }
+  },
+
+  "quote_flow": [],
+
+  "_status": "login_only — quote_flow to be mapped after live browser session capture"
+}

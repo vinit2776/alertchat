@@ -109,6 +109,9 @@ export default function App() {
             <span>🚗</span>
             <span className="app-logo-text">Alert Insurance</span>
             <span className="app-badge">UAT</span>
+            <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.5)', fontWeight: 400, letterSpacing: '0.3px' }}>
+              {__BUILD_HASH__} · {__BUILD_DATE__}
+            </span>
           </div>
           <nav className="app-nav">
             <button className="nav-btn active" onClick={() => setPage('chat')}>💬 Chat</button>
