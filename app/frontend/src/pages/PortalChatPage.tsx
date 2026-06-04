@@ -472,7 +472,7 @@ export default function PortalChatPage({ token, onLogout, onShowHistory, onShowA
           {/* Results */}
           {quoteResults && quoteResults.map((r: any, i: number) => (
             <QuoteResultCard key={i} result={r} onProceed={proceedBuy} paymentState={paymentByPortal[r.portalId]}
-              onTakeOver={isAdmin && r.success === false && onShowAdmin ? onShowAdmin : undefined} />
+              onTakeOver={isAdmin && r.success === false && onShowAdmin ? () => onShowAdmin() : undefined} />
           ))}
 
           {captchaState && (
@@ -792,8 +792,12 @@ function QuoteResultCard({ result, onProceed, paymentState, onTakeOver }: {
             <div style={qr.error}>{result.errorMessage ?? 'Quote generation failed'}</div>
             {onTakeOver && (
               <button onClick={onTakeOver}
-                style={{ marginTop: 12, width: '100%', background: '#1a56db', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 14px', fontSize: 14, fontWeight: 700, cursor: 'pointer' }}>
-                🛠 Take Over (Cookie Handoff)
+                style={{ marginTop: 12, width: '100%', background: result.needsSession ? '#0c4a6e' : '#1a56db', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 14px', fontSize: 14, fontWeight: 700, cursor: 'pointer' }}>
+                {result.needsSession
+                  ? (result.sessionExpired
+                      ? '🔑 Refresh Portal Session'
+                      : '🔑 Capture Portal Session')
+                  : '🛠 Take Over (Cookie Handoff)'}
               </button>
             )}
           </>

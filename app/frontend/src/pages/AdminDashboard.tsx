@@ -16,7 +16,7 @@ interface Analytics {
   liveSessions: number;
 }
 
-type AdminView = 'dashboard' | 'sessions' | 'companies' | 'quotes' | 'ai-costs' | 'failed-quotes';
+type AdminView = 'dashboard' | 'sessions' | 'companies' | 'quotes' | 'ai-costs' | 'failed-quotes' | 'portal-sessions';
 
 interface Props {
   token: string;
@@ -60,12 +60,13 @@ export default function AdminDashboard({ token, onBack, onCompanies, onUsers }: 
   }, []);
 
   const nav: Array<{ key: AdminView; label: string; badge?: number }> = [
-    { key: 'dashboard',     label: '📊 Overview' },
-    { key: 'failed-quotes', label: '🚨 Failed Quotes', badge: failedCount },
-    { key: 'sessions',      label: '📋 Sessions' },
-    { key: 'companies',     label: '🏢 Companies' },
-    { key: 'quotes',        label: '📄 Quotes' },
-    { key: 'ai-costs',      label: '🤖 AI Costs' },
+    { key: 'dashboard',       label: '📊 Overview' },
+    { key: 'portal-sessions', label: '🔑 Portal Sessions' },
+    { key: 'failed-quotes',   label: '🚨 Failed Quotes', badge: failedCount },
+    { key: 'sessions',        label: '📋 Sessions' },
+    { key: 'companies',       label: '🏢 Companies' },
+    { key: 'quotes',          label: '📄 Quotes' },
+    { key: 'ai-costs',        label: '🤖 AI Costs' },
   ];
 
   return (
@@ -107,6 +108,7 @@ export default function AdminDashboard({ token, onBack, onCompanies, onUsers }: 
           {view === 'companies'     && <CompaniesPanel    token={token} />}
           {view === 'quotes'        && <QuotesPanel       token={token} />}
           {view === 'ai-costs'      && <AiCostsPanel      token={token} />}
+          {view === 'portal-sessions' && <PortalSessionsPanel token={token} />}
           {view === 'failed-quotes' && <FailedQuotesPanel token={token} onResolved={loadFailedCount} />}
         </main>
       </div>
@@ -665,9 +667,30 @@ function FailedQuotesPanel({ token, onResolved }: { token: string; onResolved: (
 type Stage = 'pending' | 'active' | 'ok' | 'fail';
 interface StageState { status: Stage; message?: string }
 
-function TakeOverModal({ token, quote, portalUrl, onClose, onSaved }: {
+/** Lightweight wrapper that lets PortalSessionsPanel reuse the modal without
+ *  needing a real failed quote — synthesises a minimal FailedQuote shape. */
+function StandaloneCookieModal({ token, portalId, portalName, portalUrl, onClose, onCaptured }: {
+  token: string; portalId: string; portalName: string; portalUrl: string;
+  onClose: () => void; onCaptured: () => void;
+}) {
+  const stubQuote: FailedQuote = {
+    id: `standalone-${portalId}`, session_id: '', user_id: '',
+    portal_id: portalId, portal_name: portalName, ins_type: '—',
+    reg_number: null, vehicle_make: null, vehicle_model: null,
+    premium: null, idv: null,
+    quote_data: { errorMessage: 'Session capture only — no quote attached.' },
+    created_at: new Date().toISOString(),
+  };
+  return (
+    <TakeOverModal token={token} quote={stubQuote} portalUrl={portalUrl}
+      standalone onClose={onClose} onSaved={() => { onCaptured(); onClose(); }} />
+  );
+}
+
+function TakeOverModal({ token, quote, portalUrl, onClose, onSaved, standalone }: {
   token: string; quote: FailedQuote; portalUrl: string;
   onClose: () => void; onSaved: () => void;
+  standalone?: boolean;
 }) {
   const [handoffId, setHandoffId]   = useState<string | null>(null);
   const [stage1, setStage1]         = useState<StageState>({ status: 'active', message: `Open ${quote.portal_id.toUpperCase()} in a new tab and log in normally.` });
@@ -687,10 +710,15 @@ function TakeOverModal({ token, quote, portalUrl, onClose, onSaved }: {
     setPremium(null); setIdv(null);
 
     try {
+      // Standalone mode: pass portalId; otherwise pass the quoteResultId (which the
+      // backend uses to also load confirmedFields for an auto-replay).
+      const body = standalone
+        ? { portalId: quote.portal_id }
+        : { quoteResultId: quote.id };
       const res  = await fetch(`${autoBase}/api/admin/handoff/start`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body:   JSON.stringify({ quoteResultId: quote.id }),
+        body:   JSON.stringify(body),
       });
       const data = await res.json();
       if (!data.success) throw new Error(data.message ?? 'Failed to start handoff');
@@ -1011,6 +1039,125 @@ const fq: Record<string, React.CSSProperties> = {
   handoffCode:   { background: '#fff', padding: '4px 10px', borderRadius: 6, fontFamily: 'monospace', fontSize: 12, color: '#854d0e', fontWeight: 700, cursor: 'pointer', userSelect: 'all' },
   retryBtn:      { background: '#fff', color: '#1a56db', border: '1.5px solid #1a56db', borderRadius: 6, padding: '4px 10px', fontSize: 12, fontWeight: 600, cursor: 'pointer' },
   resultPanel:   { marginTop: 16, padding: '14px 16px', background: 'linear-gradient(135deg, #d1fae5, #a7f3d0)', borderRadius: 12, textAlign: 'center', border: '1px solid #6ee7b7' },
+};
+
+// ── Portal Sessions Panel ──────────────────────────────────────────────────
+//
+// One card per insurer the admin has access to. Shows:
+//   - 🟢 Active session captured  → quotes will use it automatically
+//   - ⚪ No session                → quotes will be blocked until captured
+//
+// Per-portal actions: 📤 Capture Session  ·  ✕ Revoke
+
+interface PortalSessionStatus {
+  portalId:   string;
+  portalName: string;
+  hasSession: boolean;
+  sessionId:  string | null;
+  capturedAt: string | null;
+  lastUsedAt: string | null;
+}
+
+const PORTAL_URLS_PS: Record<string, string> = {
+  uiic: 'https://www.uiic.in/GCWebPortal/login/LoginAction.do?p=login',
+};
+
+function PortalSessionsPanel({ token }: { token: string }) {
+  const [items, setItems]       = useState<PortalSessionStatus[]>([]);
+  const [loading, setLoading]   = useState(true);
+  const [error, setError]       = useState('');
+  const [capturing, setCapturing] = useState<PortalSessionStatus | null>(null);
+
+  async function load() {
+    setLoading(true); setError('');
+    try {
+      const res  = await fetch(`${autoBase}/api/admin/portal-sessions`, { headers: { Authorization: `Bearer ${token}` } });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.message);
+      setItems(data.portals ?? []);
+    } catch (e: any) { setError(e.message); }
+    finally { setLoading(false); }
+  }
+
+  useEffect(() => { load(); }, []);
+
+  async function revoke(portalId: string) {
+    if (!confirm(`Revoke session for ${portalId.toUpperCase()}? Quotes will fail until you capture a new one.`)) return;
+    await fetch(`${autoBase}/api/admin/portal-sessions/${portalId}`, {
+      method: 'DELETE', headers: { Authorization: `Bearer ${token}` },
+    });
+    load();
+  }
+
+  if (loading) return <div style={s.empty}>Loading portal sessions…</div>;
+  if (error)   return <div style={{ ...s.error, marginTop: 0 }}>{error}</div>;
+
+  return (
+    <div>
+      <div style={{ background: '#dbeafe', border: '1px solid #bfdbfe', color: '#1e40af', padding: '12px 16px', borderRadius: 8, marginBottom: 16, fontSize: 13, lineHeight: 1.5 }}>
+        <b>How this works:</b> Insurer portals block headless logins. Capture your portal session once (you log in via your own browser, paste cookies here)
+        and every quote will reuse it silently. When a session expires, refresh it from this page.
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 14 }}>
+        {items.map(p => {
+          const ageMin   = p.capturedAt ? Math.floor((Date.now() - new Date(p.capturedAt).getTime()) / 60_000) : null;
+          const ageLabel = ageMin == null
+            ? '—'
+            : ageMin < 60 ? `${ageMin} min ago`
+            : ageMin < 24 * 60 ? `${Math.floor(ageMin / 60)} h ago`
+            : `${Math.floor(ageMin / (24 * 60))} d ago`;
+          return (
+            <div key={p.portalId} style={ps.card}>
+              <div style={ps.cardHead}>
+                <div style={{ fontWeight: 700, fontSize: 15 }}>{p.portalName}</div>
+                <div style={{ ...ps.dot, background: p.hasSession ? '#10b981' : '#94a3b8' }} />
+              </div>
+              <div style={ps.statusLabel}>
+                {p.hasSession ? `🟢 Active · captured ${ageLabel}` : '⚪ No session captured'}
+              </div>
+              {p.lastUsedAt && (
+                <div style={ps.lastUsed}>Last used in a quote: {new Date(p.lastUsedAt).toLocaleString('en-IN')}</div>
+              )}
+              <div style={ps.actions}>
+                <button style={ps.captureBtn} onClick={() => setCapturing(p)}>
+                  {p.hasSession ? '↻ Refresh Session' : '📤 Capture Session'}
+                </button>
+                {p.hasSession && (
+                  <button style={ps.revokeBtn} onClick={() => revoke(p.portalId)} title="Revoke">✕</button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+        {items.length === 0 && (
+          <div style={s.empty}>No portal insurers enabled. Add one in 🏢 Companies first.</div>
+        )}
+      </div>
+
+      {capturing && (
+        <StandaloneCookieModal
+          token={token}
+          portalId={capturing.portalId}
+          portalName={capturing.portalName}
+          portalUrl={PORTAL_URLS_PS[capturing.portalId] ?? ''}
+          onClose={() => setCapturing(null)}
+          onCaptured={load}
+        />
+      )}
+    </div>
+  );
+}
+
+const ps: Record<string, React.CSSProperties> = {
+  card:        { background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, padding: 16, boxShadow: '0 1px 3px rgba(0,0,0,0.05)' },
+  cardHead:    { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 },
+  dot:         { width: 10, height: 10, borderRadius: '50%' },
+  statusLabel: { fontSize: 13, color: '#475569', marginBottom: 4 },
+  lastUsed:    { fontSize: 11, color: '#94a3b8', marginBottom: 12 },
+  actions:     { display: 'flex', gap: 6, marginTop: 12 },
+  captureBtn:  { flex: 1, background: '#1a56db', color: '#fff', border: 'none', borderRadius: 8, padding: '9px 14px', fontSize: 13, fontWeight: 600, cursor: 'pointer' },
+  revokeBtn:   { background: '#fef2f2', color: '#991b1b', border: '1px solid #fecaca', borderRadius: 8, padding: '9px 12px', fontSize: 13, cursor: 'pointer' },
 };
 
 // ── Styles ─────────────────────────────────────────────────────────────────

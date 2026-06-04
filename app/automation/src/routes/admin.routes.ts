@@ -1298,28 +1298,84 @@ setInterval(() => {
   }
 }, 5 * 60 * 1000).unref?.();
 
-/** POST /api/admin/handoff/start — create a handoff for a failed quote */
+/** POST /api/admin/handoff/start
+ *  Two modes:
+ *    1. { quoteResultId } — handoff tied to a specific failed quote
+ *       (after cookies arrive, the system automatically replays that quote)
+ *    2. { portalId }      — standalone session capture, no quote attached
+ *       (used by the Portal Sessions tab to refresh sessions on demand)
+ */
 router.post('/handoff/start', requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { quoteResultId } = req.body as { quoteResultId?: string };
-    if (!quoteResultId) return res.status(400).json({ success: false, message: 'quoteResultId required' });
+    const { quoteResultId, portalId: bodyPortalId } = req.body as {
+      quoteResultId?: string; portalId?: string;
+    };
 
-    const row = await queryOne<{ portal_id: string; session_id: string }>(
-      'SELECT portal_id, session_id FROM quote_results WHERE id = $1',
-      [quoteResultId]
-    );
-    if (!row) return res.status(404).json({ success: false, message: 'Quote not found' });
+    let portalId  = bodyPortalId ?? '';
+    let sessionId = `standalone:${req.user!.sub}:${Date.now()}`;
+    let quoteRef  = '';
+
+    if (quoteResultId) {
+      const row = await queryOne<{ portal_id: string; session_id: string }>(
+        'SELECT portal_id, session_id FROM quote_results WHERE id = $1',
+        [quoteResultId]
+      );
+      if (!row) return res.status(404).json({ success: false, message: 'Quote not found' });
+      portalId  = row.portal_id;
+      sessionId = row.session_id;
+      quoteRef  = quoteResultId;
+    } else if (!portalId) {
+      return res.status(400).json({ success: false, message: 'Either quoteResultId or portalId is required' });
+    }
 
     const handoffId = `ho_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
     handoffs.set(handoffId, {
       userId:        req.user!.sub,
-      portalId:      row.portal_id,
-      quoteResultId,
-      sessionId:     row.session_id,
+      portalId,
+      quoteResultId: quoteRef,
+      sessionId,
       createdAt:     Date.now(),
     });
 
-    res.json({ success: true, handoffId, portalId: row.portal_id });
+    res.json({ success: true, handoffId, portalId });
+  } catch (err) { next(err); }
+});
+
+/** GET /api/admin/portal-sessions
+ *  Returns status of all known portals for the current admin: which have an
+ *  active captured session and which need a capture.
+ */
+router.get('/portal-sessions', requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { listSessionStatus } = await import('../portal/session-cache');
+    const companies = await getAllCompanies();
+    const portalIds = companies
+      .filter(c => c.enabled && getConnectorType(c.id) === 'portal')
+      .map(c => c.id);
+
+    const statuses = await listSessionStatus(req.user!.sub, portalIds);
+    const enriched = statuses.map(s => {
+      const company = companies.find(c => c.id === s.portalId);
+      return {
+        portalId:    s.portalId,
+        portalName:  company?.name ?? s.portalId,
+        hasSession:  !!s.sessionId,
+        sessionId:   s.sessionId,
+        capturedAt:  s.capturedAt,
+        lastUsedAt:  s.lastUsedAt,
+      };
+    });
+
+    res.json({ success: true, portals: enriched });
+  } catch (err) { next(err); }
+});
+
+/** DELETE /api/admin/portal-sessions/:portalId — revoke any active session for this portal */
+router.delete('/portal-sessions/:portalId', requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { revokeUserPortalSessions } = await import('../portal/session-cache');
+    const count = await revokeUserPortalSessions(req.user!.sub, req.params.portalId);
+    res.json({ success: true, revoked: count });
   } catch (err) { next(err); }
 });
 
@@ -1423,7 +1479,20 @@ router.post('/portal-sessions', requireAdmin, async (req: Request, res: Response
       meta: { portalId, cookieCount: cookies.length, portalSessionId },
     } as any);
 
-    // Kick off the replay in the background — emit progress on the same channel
+    // Standalone capture (no quoteResultId): just emit replay_complete with no result
+    // so the modal closes cleanly. The session is now stored and will be picked up
+    // automatically by the next quote.
+    if (!info.quoteResultId) {
+      emitProgress(channel, {
+        type: 'replay_complete', portalId, portalName: portalId.toUpperCase(),
+        message: `✓ Session captured — future quotes will use it automatically`,
+        result: { success: true, premium: null, idv: null } as any,
+        ts: Date.now(),
+      });
+      return res.json({ success: true, portalSessionId, standalone: true });
+    }
+
+    // Tied to a quote: kick off the replay in the background — progress on the same channel
     replayQuoteWithSession({
       quoteResultId: info.quoteResultId,
       portalSessionId,

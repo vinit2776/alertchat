@@ -104,6 +104,8 @@ router.post('/:sessionId/start', requireAuth, async (req: Request, res: Response
         ? computeMotorFields(state.confirmedFields)
         : state.confirmedFields;
 
+    const { findActiveSession, touchSession, expireSession } = await import('../portal/session-cache');
+
     const jobs = companiesStarted.map(async (company) => {
       const connector     = getConnector(company.id);
       const isPortal      = connector.type === 'portal';
@@ -114,8 +116,34 @@ router.post('/:sessionId/start', requireAuth, async (req: Request, res: Response
         let result: any;
 
         if (isPortal) {
-          // ── Portal path: acquire browser slot ──────────────────────────
-          const { slotId, context } = await browserPool.acquire(sessionKey);
+          // ── Portal path: check for an active human-captured session ────
+          const portalSession = await findActiveSession(user.sub, company.id);
+
+          if (!portalSession) {
+            // No active session — refuse to attempt automated login (which
+            // would burn an attempt against bot detection). Surface a clear
+            // result the UI can render with a "Capture session" button.
+            result = {
+              portalId:   company.id,
+              portalName: company.name,
+              success:    false,
+              premium:    null,
+              idv:        null,
+              rawData:    {},
+              durationMs: 0,
+              errorMessage:    `No active ${company.id.toUpperCase()} portal session. An admin must capture a session before quotes can run.`,
+              needsSession:    true,    // ← UI uses this to show "Capture session" button
+              portalSessionId: null,
+            };
+            emitProgress(sessionId, {
+              type: 'error', portalId: company.id, portalName: company.name,
+              message: result.errorMessage, ts: Date.now(),
+            });
+            return result;
+          }
+
+          // ── Portal path: acquire browser slot using captured session ──
+          const { slotId, context } = await browserPool.acquire(sessionKey, portalSession.storageState);
           acquired = true;
 
           logEvent({
@@ -124,14 +152,38 @@ router.post('/:sessionId/start', requireAuth, async (req: Request, res: Response
             meta: { slotId },
           });
 
-          result = await connector.getQuote(
-            enrichedFields,
-            sessionId, user.sub, user.email,
-            {
-              browserContext: context,
-              onProgress: (event) => emitProgress(sessionId, event),
-            },
-          );
+          try {
+            result = await connector.getQuote(
+              enrichedFields,
+              sessionId, user.sub, user.email,
+              {
+                browserContext: context,
+                onProgress:     (event) => emitProgress(sessionId, event),
+                skipLogin:      true,   // Always skip login — we already have a session
+              },
+            );
+            // Touch session on success so we can show last_used_at in admin
+            if (result.success) await touchSession(portalSession.id).catch(() => {});
+          } catch (err: any) {
+            if (err?.name === 'SessionExpiredError') {
+              await expireSession(portalSession.id).catch(() => {});
+              result = {
+                portalId:        company.id,
+                portalName:      company.name,
+                success:         false,
+                premium:         null,
+                idv:             null,
+                rawData:         {},
+                durationMs:      0,
+                errorMessage:    `${company.id.toUpperCase()} session expired. Admin must capture a fresh session.`,
+                sessionExpired:  true,
+                needsSession:    true,
+                portalSessionId: portalSession.id,
+              };
+            } else {
+              throw err;
+            }
+          }
 
           // Persist resume state to DB so /proceed can restart after pool eviction
           if (result.success && result.resumeState) {
