@@ -30,6 +30,7 @@ export interface InsuranceCompany {
   id:                  string;
   name:                string;
   logoUrl:             string;
+  portalUrl:           string;
   insuranceTypes:      InsuranceType[];
   playbookVersion:     string;
   enabled:             boolean;

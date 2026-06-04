@@ -168,8 +168,18 @@ router.get('/companies', requireAdmin, async (req, res, next) => {
 
       const sessionStatus = sessionByPortal.get(c.id) ?? null;
 
+      // Derive portalUrl from playbook if DB field is empty
+      let portalUrl = c.portalUrl || '';
+      if (!portalUrl && connectorType === 'portal') {
+        try {
+          const pb = loadPlaybook(c.id);
+          portalUrl = `${pb.base_url}${pb.login?.url ?? ''}`;
+        } catch {}
+      }
+
       return {
         ...c,
+        portalUrl,
         connectorType,
         credentialsConfigured,
         credentialNote,
@@ -1627,6 +1637,27 @@ async function replayQuoteWithSession(opts: {
     if (acquired) await browserPool.release(sessionKey);
   }
 }
+
+// PATCH /api/admin/companies/:id/portal-url — save or update the login URL
+router.patch('/companies/:id/portal-url', requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { portalUrl } = req.body as { portalUrl: string };
+    if (typeof portalUrl !== 'string') {
+      res.status(400).json({ success: false, message: 'portalUrl required' }); return;
+    }
+    const row = await queryOne<any>(
+      `UPDATE insurance_companies SET portal_url = $1, updated_at = now() WHERE id = $2 RETURNING *`,
+      [portalUrl, req.params.id],
+    );
+    if (!row) { res.status(404).json({ success: false, message: 'Company not found' }); return; }
+    logEvent({
+      userId: req.user!.sub, userEmail: req.user!.email, sessionId: 'admin',
+      action: 'admin_action', outcome: 'success',
+      meta: { action: 'set_portal_url', companyId: req.params.id, portalUrl },
+    });
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
 
 // ── Portal credential vault ────────────────────────────────────────────────
 

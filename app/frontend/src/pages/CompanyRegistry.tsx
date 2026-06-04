@@ -30,6 +30,7 @@ interface SessionStatus {
 interface Company {
   id:                    string;
   name:                  string;
+  portalUrl:             string;
   insuranceTypes:        string[];
   playbookVersion:       string;
   enabled:               boolean;
@@ -144,6 +145,17 @@ export default function CompanyRegistry({ token, onBack }: Props) {
       setMsg(id, data.success, data.message || (data.success ? 'API OK' : 'Failed'));
     } catch (err: any) { setMsg(id, false, err.message); }
     finally { setTesting(null); }
+  }
+
+  async function savePortalUrl(id: string, url: string) {
+    const res  = await fetch(`${autoBase}/api/admin/companies/${id}/portal-url`, {
+      method:  'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body:    JSON.stringify({ portalUrl: url }),
+    });
+    const data = await res.json();
+    if (data.success) setCompanies(prev => prev.map(c => c.id === id ? { ...c, portalUrl: url } : c));
+    else setMsg(id, false, data.message || 'Failed to save URL');
   }
 
   function openCredModal(id: string, name: string) {
@@ -323,6 +335,7 @@ export default function CompanyRegistry({ token, onBack }: Props) {
                 onSetCredentials={() => openCredModal(c.id, c.name)}
                 onDeleteCredentials={() => deleteCredentials(c.id)}
                 onOpenLiveBrowser={() => setLiveModal({ id: c.id, name: c.name })}
+                onSavePortalUrl={url => savePortalUrl(c.id, url)}
               />
             ))}
           </div>
@@ -363,11 +376,12 @@ interface CardProps {
   onSetCredentials:    () => void;
   onDeleteCredentials: () => void;
   onOpenLiveBrowser:   () => void;
+  onSavePortalUrl:     (url: string) => void;
 }
 
 function CompanyCard({
   company: c, toggling, testing, refreshing, actionMsg,
-  onToggle, onTestPortal, onTestApi, onRefreshCache, onSetCredentials, onDeleteCredentials, onOpenLiveBrowser,
+  onToggle, onTestPortal, onTestApi, onRefreshCache, onSetCredentials, onDeleteCredentials, onOpenLiveBrowser, onSavePortalUrl,
 }: CardProps) {
   const meta  = CONNECTOR_META[c.connectorType] ?? CONNECTOR_META.portal;
   const isApi = c.connectorType === 'api';
@@ -404,6 +418,9 @@ function CompanyCard({
           <span key={t} style={card.insBadge}>{t}</span>
         ))}
       </div>
+
+      {/* Portal URL row */}
+      <PortalUrlRow url={c.portalUrl} onSave={onSavePortalUrl} />
 
       <div style={card.divider} />
 
@@ -582,6 +599,54 @@ function StatusRow({ label, value, ok, warn, note }: {
         </span>
         {note && <span style={card.statusNote}>{note}</span>}
       </div>
+    </div>
+  );
+}
+
+function PortalUrlRow({ url, onSave }: { url: string; onSave: (url: string) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [draft,   setDraft]   = useState('');
+
+  function startEdit() { setDraft(url); setEditing(true); }
+  function cancel()    { setEditing(false); }
+  function save()      { if (draft.trim()) { onSave(draft.trim()); } setEditing(false); }
+
+  if (editing) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 0' }}>
+        <input
+          autoFocus
+          value={draft}
+          onChange={e => setDraft(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') save(); if (e.key === 'Escape') cancel(); }}
+          placeholder="https://portal.insurer.com/login"
+          style={{ flex: 1, fontSize: 12, padding: '4px 8px', border: '1px solid #6366f1', borderRadius: 6, outline: 'none' }}
+        />
+        <button onClick={save}   style={{ fontSize: 11, padding: '3px 10px', background: '#1a5276', color: '#fff', border: 'none', borderRadius: 5, cursor: 'pointer' }}>Save</button>
+        <button onClick={cancel} style={{ fontSize: 11, padding: '3px 8px',  background: '#f3f4f6', color: '#374151', border: 'none', borderRadius: 5, cursor: 'pointer' }}>✕</button>
+      </div>
+    );
+  }
+
+  if (!url) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <span style={{ fontSize: 11, color: '#f59e0b', fontWeight: 500 }}>⚠ No portal URL</span>
+        <button onClick={startEdit} style={{ fontSize: 11, padding: '2px 8px', background: '#fef3c7', color: '#92400e', border: '1px solid #fde68a', borderRadius: 5, cursor: 'pointer' }}>+ Add URL</button>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+      <a
+        href={url} target="_blank" rel="noopener noreferrer"
+        style={{ fontSize: 11, color: '#1d4ed8', textDecoration: 'none', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}
+        title={url}
+      >
+        🔗 {url}
+      </a>
+      <button onClick={startEdit} style={{ fontSize: 10, padding: '2px 6px', background: '#f0f4f8', color: '#6b7280', border: '1px solid #e5e7eb', borderRadius: 4, cursor: 'pointer', flexShrink: 0 }}>Edit</button>
     </div>
   );
 }

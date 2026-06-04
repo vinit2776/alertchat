@@ -12,6 +12,7 @@ const STATIC_API_COMPANIES: InsuranceCompany[] = (() => {
       id:                  'bajaj',
       name:                'Bajaj Allianz General Insurance',
       logoUrl:             '',
+      portalUrl:           '',
       insuranceTypes:      ['motor'] as InsuranceType[],
       playbookVersion:     'api-v1',
       enabled:             false,  // disabled until credentials are configured in .env
@@ -33,6 +34,7 @@ function getStaticCompanies(): InsuranceCompany[] {
       id,
       name:                id.toUpperCase().replace(/_/g, ' '),
       logoUrl:             '',
+      portalUrl:           '',
       insuranceTypes:      ['motor'] as InsuranceType[],
       playbookVersion:     '1.0',
       enabled:             true,
@@ -93,11 +95,12 @@ export async function updateLastTested(id: string, success: boolean): Promise<vo
 export async function upsertCompany(company: Partial<InsuranceCompany> & { id: string }): Promise<InsuranceCompany> {
   const row = await queryOne<any>(
     `INSERT INTO insurance_companies
-       (id, name, logo_url, insurance_types, playbook_version, enabled, credential_secret_key)
-     VALUES ($1,$2,$3,$4,$5,$6,$7)
+       (id, name, logo_url, portal_url, insurance_types, playbook_version, enabled, credential_secret_key)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
      ON CONFLICT (id) DO UPDATE SET
        name                 = EXCLUDED.name,
        logo_url             = EXCLUDED.logo_url,
+       portal_url           = EXCLUDED.portal_url,
        insurance_types      = EXCLUDED.insurance_types,
        playbook_version     = EXCLUDED.playbook_version,
        enabled              = EXCLUDED.enabled,
@@ -108,6 +111,7 @@ export async function upsertCompany(company: Partial<InsuranceCompany> & { id: s
       company.id,
       company.name ?? '',
       company.logoUrl ?? '',
+      company.portalUrl ?? '',
       company.insuranceTypes ?? [],
       company.playbookVersion ?? '1.0',
       company.enabled ?? false,
@@ -122,6 +126,7 @@ function rowToCompany(row: any): InsuranceCompany {
     id:                  row.id,
     name:                row.name,
     logoUrl:             row.logo_url,
+    portalUrl:           row.portal_url ?? '',
     insuranceTypes:      row.insurance_types,
     playbookVersion:     row.playbook_version,
     enabled:             row.enabled,
