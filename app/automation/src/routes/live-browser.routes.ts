@@ -134,9 +134,16 @@ router.post('/start', requireAdmin, async (req: Request, res: Response, next: Ne
     if (!portalId) { res.status(400).json({ success: false, message: 'portalId required' }); return; }
 
     let loginUrl: string;
+    let triggerSelector: string | undefined;
+    let dismissSelectors: string[] = [];
+    let usernameSelector = 'input[type=text], input[name*=user], input[id*=user]';
+
     try {
       const pb = loadPlaybook(portalId);
-      loginUrl = `${pb.base_url}${pb.login.url}`;
+      loginUrl         = `${pb.base_url}${pb.login.url}`;
+      triggerSelector  = (pb.login as any).trigger_selector;
+      dismissSelectors = (pb.login as any).dismiss_modals ?? [];
+      usernameSelector = pb.login.username_field ?? usernameSelector;
     } catch {
       res.status(404).json({ success: false, message: `No playbook found for ${portalId}` });
       return;
@@ -153,8 +160,23 @@ router.post('/start', requireAdmin, async (req: Request, res: Response, next: Ne
     const context = await browser.newContext({ viewport: VIEWPORT });
     const page    = await context.newPage();
 
-    // Navigate to login page
-    await page.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+    // Navigate — use networkidle for JS-heavy portals; fall back gracefully on timeout
+    await page.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: 45_000 });
+
+    // Dismiss any promo modals that block the login form
+    for (const sel of dismissSelectors) {
+      await page.locator(sel).first().click({ timeout: 3_000 }).catch(() => {});
+    }
+
+    // Some portals (e.g. Oriental) show login as a modal triggered by a button click
+    if (triggerSelector) {
+      await page.locator(triggerSelector).first().click({ timeout: 5_000 }).catch(() => {});
+    }
+
+    // Wait for the login form to actually render (Angular / jQuery portals need this)
+    await page.waitForSelector(usernameSelector, { timeout: 15_000 }).catch(() => {});
+    // Extra buffer for slow portals
+    await page.waitForTimeout(800);
 
     const id = `lb_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const session: LiveSession = {
@@ -169,7 +191,7 @@ router.post('/start', requireAdmin, async (req: Request, res: Response, next: Ne
     };
     sessions.set(id, session);
 
-    // First screenshot
+    // First screenshot — login form should be visible by now
     const buf = await page.screenshot({ type: 'jpeg', quality: 80 });
 
     logEvent({
