@@ -160,23 +160,29 @@ router.post('/start', requireAdmin, async (req: Request, res: Response, next: Ne
     const context = await browser.newContext({ viewport: VIEWPORT });
     const page    = await context.newPage();
 
-    // Navigate — use networkidle for JS-heavy portals; fall back gracefully on timeout
+    // Navigate — domcontentloaded fires quickly; we wait for the form below
     await page.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: 45_000 });
 
-    // Dismiss any promo modals that block the login form
+    // Dismiss any promo/cookie modals that block the login form
     for (const sel of dismissSelectors) {
       await page.locator(sel).first().click({ timeout: 3_000 }).catch(() => {});
     }
 
-    // Some portals (e.g. Oriental) show login as a modal triggered by a button click
+    // Some portals (e.g. Oriental) show login as a modal triggered by a button
     if (triggerSelector) {
       await page.locator(triggerSelector).first().click({ timeout: 5_000 }).catch(() => {});
     }
 
-    // Wait for the login form to actually render (Angular / jQuery portals need this)
-    await page.waitForSelector(usernameSelector, { timeout: 15_000 }).catch(() => {});
-    // Extra buffer for slow portals
-    await page.waitForTimeout(800);
+    // Wait for the login form to render — Angular/jQuery portals need up to 20s.
+    // If it never appears (e.g. blocked IP), show whatever is on screen with a warning.
+    const formFound = await page.waitForSelector(usernameSelector, { timeout: 20_000 })
+      .then(() => true).catch(() => false);
+
+    if (!formFound) {
+      console.warn(`[live-browser] login form not found for ${portalId} after 20s — showing current page`);
+    }
+    // Short buffer after form appears for any post-render animations
+    await page.waitForTimeout(500);
 
     const id = `lb_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const session: LiveSession = {

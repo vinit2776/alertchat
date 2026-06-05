@@ -47,18 +47,26 @@ async function loginToPortal(
   captchaOverride?: string,
 ): Promise<LoginOutcome> {
   const loginUrl = playbook.base_url.replace(/\/$/, '') + playbook.login.url;
-  await page.goto(loginUrl, { waitUntil: 'networkidle' });
+  await page.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: 45_000 });
 
+  // Dismiss promo/cookie modals before anything else
   if (playbook.login.dismiss_modals?.length) {
     for (const sel of playbook.login.dismiss_modals) {
-      await page.locator(sel).first().click({ timeout: 5_000 }).catch(() => {});
-      await page.waitForTimeout(300);
+      await page.locator(sel).first().click({ timeout: 3_000 }).catch(() => {});
+      await page.waitForTimeout(200);
     }
   }
 
-  await page.click(playbook.login.username_field);
+  // Some portals show login as a modal (e.g. Oriental) — click the trigger first
+  const triggerSel = (playbook.login as any).trigger_selector as string | undefined;
+  if (triggerSel) {
+    await page.locator(triggerSel).first().click({ timeout: 5_000 }).catch(() => {});
+  }
+
+  // Wait for the login form to render — Angular/jQuery portals need up to 15s
+  await page.waitForSelector(playbook.login.username_field, { timeout: 20_000 });
+
   await page.fill(playbook.login.username_field, creds.username);
-  await page.click(playbook.login.password_field);
   await page.fill(playbook.login.password_field, creds.password);
 
   let captchaSolved: string | null = null;
